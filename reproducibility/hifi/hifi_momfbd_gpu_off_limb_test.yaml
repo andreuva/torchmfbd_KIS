@@ -1,0 +1,96 @@
+telescope:
+    diameter: 144.0
+    central_obscuration : 40.0
+    # spider : 0            # GREGOR spider width in cm. Left unset (0) - set it only
+    #                       # if the real value is known; a wrong value degrades the pupil model.
+
+images:
+    n_pixel : 96
+    pix_size : 0.0462
+    apodization_border : 14
+    remove_gradient_apodization : True  # Essential for off-limb patches
+
+object1:
+    wavelength : 6567.0
+    image_filter: scharmer
+    cutoff : [0.80, 0.85]
+    s_u_joint : 100.0
+
+object2:
+    wavelength : 6563.0
+    image_filter: scharmer
+    cutoff : [0.80, 0.85]
+    s_u_joint : 100.0
+
+optimization:
+    gpu : 0
+    transform : softplus
+    softplus_scale : 1.0
+    lr_obj : 0.01
+    lr_modes : 0.02
+    lr_prior : 0.2
+    loss_type: joint
+    filter_loss : wiener    # Explicit; 'wiener' was already the implicit default ('lowpass' is the alternative)
+
+regularization:
+     iuwt1:
+        variable : object
+        lambda : 0.003
+        nbands : 5
+
+psf:
+    model : kl
+    nmax_modes : 90
+
+    # Intra-exposure image motion, modelled as an anisotropic Gaussian OTF factor
+    # (3 free parameters per frame: sigma_x, sigma_y, rho_xy).
+    # NOTE: the previous value `False` was an invalid type - the code compares this
+    # key against the strings 'none'/'slow'/'fast', so `False` silently behaved as 'none'.
+    # Valid values: none / fast / slow.  'fast' only becomes active once the annealing
+    # schedule has opened more than 20 modes; 'slow' (Bezier-parameterised motion path)
+    # only at the full mode count and is much more expensive.
+    jitter : none
+
+    # Zero the tip-tilt modes instead of referencing them to frame 0 of the burst.
+    # By default the code centres tip-tilt on the burst's first frame
+    # (modes[:, 0:1, 0:2]); since the batch script sorts frames by quality, that
+    # reference is a different physical frame in every burst, so the reconstructed
+    # object is free to sit at a slightly different absolute position each burst.
+    # Zeroing it anchors every burst to the same reference (the average geometry the
+    # destretch step aligns to), which attacks the movie's frame-to-frame wander at
+    # its source. Safe here because destretch has already removed image motion
+    # between frames within the burst.
+    remove_tt : True
+
+    # orthogonalize : True
+    # Gram-Schmidt/QR-orthogonalises the KL basis over the (annular) pupil. Plausibly
+    # useful with this 40/144 = 28% central obscuration, but left OFF deliberately:
+    # the basis is cached in basis/ under a filename that does NOT record whether it
+    # was orthogonalised, so (a) with the existing cache this flag is silently
+    # ignored, and (b) if the cache is cleared the orthogonalised basis is then
+    # reused by every later run regardless of this setting. Enable only together with
+    # a cleared//separate basis/ directory, and re-validate.
+
+initialization:
+    # NOTE: this whole section only takes effect when deconvolve(infer_object=True).
+    # The HiFI+ batch script runs with infer_object=False (the object is obtained
+    # analytically from the frames and current PSFs), so changing this has no effect
+    # in that pipeline.
+    object : contrast
+    modes_std : 0.0
+
+annealing:
+    type: linear
+    start_pct : 0.0
+    end_pct : 0.6
+
+priors:
+    K:
+        mean: 10.0
+        sigma: 1.0
+    v0:
+        mean: 0.1
+        sigma: 1.0
+    p:
+        mean: 2.0
+        sigma: 1.0
