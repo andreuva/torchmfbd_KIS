@@ -77,7 +77,7 @@ def measure_drift_and_brightness(result_files, upsample_factor=20, max_step_shif
     return wb_shifts, nb_shifts, wb_scales, nb_scales
 
 
-def measure_display_range(result_files, wb_scales, nb_scales, sample_size=40, low_pct=1.0, high_pct=99.5):
+def measure_display_range(result_files, wb_scales, nb_scales, sample_size=40, low_pct=0.4, high_pct=99.9):
     """
     Pick one fixed (vmin, vmax) per channel for the whole movie, from the
     brightness-corrected data of an evenly spaced sample of frames, so
@@ -96,8 +96,15 @@ def measure_display_range(result_files, wb_scales, nb_scales, sample_size=40, lo
         lo, hi = np.percentile(nb, [low_pct, high_pct])
         nb_lo.append(lo); nb_hi.append(hi)
 
-    wb_vrange = (float(np.median(wb_lo)), float(np.median(wb_hi)))
-    nb_vrange = (float(np.median(nb_lo)), float(np.median(nb_hi)))
+    # Widen the shared range slightly so the fixed display does not overstate
+    # local contrast while keeping brightness constant throughout the movie. Increasing the range factor will reduce contrast 
+    range_factor = 1.4                                                          
+    wb_center = (np.median(wb_lo) + np.median(wb_hi)) / 2.0
+    wb_half_range = (np.median(wb_hi) - np.median(wb_lo)) * range_factor / 2.0
+    nb_center = (np.median(nb_lo) + np.median(nb_hi)) / 2.0
+    nb_half_range = (np.median(nb_hi) - np.median(nb_lo)) * range_factor / 2.0
+    wb_vrange = (float(wb_center - wb_half_range), float(wb_center + wb_half_range))
+    nb_vrange = (float(nb_center - nb_half_range), float(nb_center + nb_half_range))
     return wb_vrange, nb_vrange
 
 

@@ -161,7 +161,10 @@ def process_single_file(fits_path, output_path, config_path, args, device):
     obj_nb = patchify.unpatchify(decSI.obj[1][:, None, ...], apodization=apod, weight_type='cosine', weight_params=30).cpu().numpy()
 
     # Save reconstructed objects to FITS
-    hdu0 = fits.PrimaryHDU(header=header)
+    hdu0 = fits.PrimaryHDU(
+    data=obj_wb[0, :, :],
+    header=header)
+    
     h = hdu0.header
     h['PIPELINE'] = ('hifi_momfbd_batch_gpu', 'Reconstruction script')
     h['TMFBDVER'] = (getattr(torchmfbd, '__version__', 'unknown'), 'torchmfbd version')
@@ -200,6 +203,8 @@ if __name__ == '__main__':
     parser.add_argument("--patch_size", type=int, default=96, help="Patch size")
     parser.add_argument("--stride_size", type=int, default=50, help="Stride size")
     parser.add_argument("--crop_size", type=int, default=None, help="Crop region size (None for full FOV)")
+    parser.add_argument("--start_time", type=str, default=None, help="Start time (HHMMSS)")
+    parser.add_argument("--end_time", type=str, default=None, help="End time (HHMMSS)")
     parser.add_argument("--no_destretch", action="store_true", help="Disable destretching")
     parser.add_argument("--limb_mode", choices=['auto', 'off_limb', 'on_disk'], default='auto',
                         help="Off-limb handling. 'auto' (default) classifies each burst from its "
@@ -229,6 +234,14 @@ if __name__ == '__main__':
     # Search for matching FITS files
     search_path = os.path.join(args.input_dir, args.pattern)
     fits_files = sorted(glob.glob(search_path))
+
+    if args.start_time is not None or args.end_time is not None:
+        start_time = args.start_time or "000000"
+        end_time = args.end_time or "235959"
+        fits_files = [
+            path for path in fits_files
+            if start_time <= os.path.basename(path).split("_")[2] <= end_time
+        ]
 
     if not fits_files:
         print(f"No FITS files found matching pattern '{search_path}'.")

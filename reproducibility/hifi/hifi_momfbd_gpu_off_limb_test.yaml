@@ -1,7 +1,7 @@
 telescope:
     diameter: 144.0
     central_obscuration : 40.0
-    # spider : 0            # GREGOR spider width in cm. Left unset (0) - set it only
+    spider : 2            # GREGOR spider width in cm. Left unset (0) - set it only
     #                       # if the real value is known; a wrong value degrades the pupil model.
 
 images:
@@ -13,14 +13,16 @@ images:
 object1:
     wavelength : 6567.0
     image_filter: scharmer
-    cutoff : [0.80, 0.85]
-    s_u_joint : 100.0
+    cutoff : [0.60, 0.70]
+    s_u_joint : 25             #This Value should be determined individually for each dataset    
+                                  #Lower Values introduce less noise (smoother)
+                                  #Values above 100 trust the data more and reconstruct more agressivly
 
 object2:
     wavelength : 6563.0
     image_filter: scharmer
-    cutoff : [0.80, 0.85]
-    s_u_joint : 100.0
+    cutoff : [0.60, 0.70]
+    s_u_joint : 25
 
 optimization:
     gpu : 0
@@ -35,7 +37,7 @@ optimization:
 regularization:
      iuwt1:
         variable : object
-        lambda : 0.003
+        lambda : 0.0015
         nbands : 5
 
 psf:
@@ -49,7 +51,7 @@ psf:
     # Valid values: none / fast / slow.  'fast' only becomes active once the annealing
     # schedule has opened more than 20 modes; 'slow' (Bezier-parameterised motion path)
     # only at the full mode count and is much more expensive.
-    jitter : none
+    jitter : fast
 
     # Zero the tip-tilt modes instead of referencing them to frame 0 of the burst.
     # By default the code centres tip-tilt on the burst's first frame
