@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 # Runs one GPU's shard of the full HiFI+ MOMFBD batch across all datasets.
 # Usage: run_all_hifi_gpu.sh <gpu_id> <num_shards>
+#
+# The configuration is hifi_momfbd.yaml, the same one hifi_momfbd.py uses for a
+# single burst. hifi_momfbd_gpu.yaml and hifi_momfbd_gpu_improved.yaml are the
+# older settings and are left only for reference - running with them reproduces
+# the noisy reconstructions.
+#
+# Budget about 5 minutes per burst on an H100 (~1650 patches at stride 32).
 set -uo pipefail
 
 GPU_ID="$1"

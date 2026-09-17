@@ -2,12 +2,13 @@ import argparse
 import matplotlib.pyplot as plt
 from astropy.io import fits
 from scipy.ndimage import shift as ndi_shift
+from scipy.ndimage import gaussian_filter
 import numpy as np
 
 def plot_momfbd_results(fits_path, output_png=None, raw_fits_path=None,
                          wb_shift=(0.0, 0.0), nb_shift=(0.0, 0.0),
                          wb_scale=1.0, nb_scale=1.0,
-                         wb_vrange=None, nb_vrange=None):
+                         wb_vrange=None, nb_vrange=None, smooth=0.0):
     """
     wb_shift / nb_shift : (dy, dx) sub-pixel translation applied to the
         reconstructed frame before display, to compensate for burst-to-burst
@@ -19,6 +20,13 @@ def plot_momfbd_results(fits_path, output_png=None, raw_fits_path=None,
     wb_vrange / nb_vrange : optional (vmin, vmax) fixed display range; when
         None, matplotlib auto-scales to this frame's own data (the original
         single-frame behavior).
+    smooth : Gaussian sigma in pixels applied to the reconstructed frames before
+        display, to take the edge off whatever noise the reconstruction still
+        carries. This is cosmetic: it is applied to the displayed copy only, not
+        to the FITS, and the raw panels are left alone so the comparison still
+        shows what the raw data looked like. At 0.0462 arcsec/pixel a sigma of 2
+        is a FWHM of 0.22 arcsec, about 2.3 times the diffraction limit at
+        656 nm, so it does cost real resolution.
     """
     f = fits.open(fits_path)
 
@@ -38,6 +46,12 @@ def plot_momfbd_results(fits_path, output_png=None, raw_fits_path=None,
         wb_data = wb_data * wb_scale
     if nb_scale != 1.0:
         nb_data = nb_data * nb_scale
+
+    if smooth > 0:
+        wb_data = gaussian_filter(wb_data, smooth)
+        nb_data = gaussian_filter(nb_data, smooth)
+
+    smooth_label = f'\nGaussian smoothed, sigma = {smooth:g} px' if smooth > 0 else ''
 
     wb_vmin, wb_vmax = wb_vrange if wb_vrange is not None else (None, None)
     nb_vmin, nb_vmax = nb_vrange if nb_vrange is not None else (None, None)
@@ -60,7 +74,7 @@ def plot_momfbd_results(fits_path, output_png=None, raw_fits_path=None,
         fig.colorbar(im0, ax=axes[0, 0], fraction=0.046, pad=0.04)
 
         im1 = axes[0, 1].imshow(wb_data, cmap='gray', origin='lower', vmin=wb_vmin, vmax=wb_vmax)
-        axes[0, 1].set_title('MOMFBD Reconstructed Broad-band (656.7 nm)')
+        axes[0, 1].set_title('MOMFBD Reconstructed Broad-band (656.7 nm)' + smooth_label)
         axes[0, 1].axis('off')
         fig.colorbar(im1, ax=axes[0, 1], fraction=0.046, pad=0.04)
 
@@ -70,19 +84,19 @@ def plot_momfbd_results(fits_path, output_png=None, raw_fits_path=None,
         fig.colorbar(im2, ax=axes[1, 0], fraction=0.046, pad=0.04)
 
         im3 = axes[1, 1].imshow(nb_data, cmap='gray', origin='lower', vmin=nb_vmin, vmax=nb_vmax)
-        axes[1, 1].set_title('MOMFBD Reconstructed Narrow-band H-alpha Lyot (656.3 nm)')
+        axes[1, 1].set_title('MOMFBD Reconstructed Narrow-band H-alpha Lyot (656.3 nm)' + smooth_label)
         axes[1, 1].axis('off')
         fig.colorbar(im3, ax=axes[1, 1], fraction=0.046, pad=0.04)
     else:
         fig, axes = plt.subplots(1, 2, figsize=(14, 7))
 
         im0 = axes[0].imshow(wb_data, cmap='gray', origin='lower', vmin=wb_vmin, vmax=wb_vmax)
-        axes[0].set_title('MOMFBD Reconstructed Broad-band (656.7 nm)')
+        axes[0].set_title('MOMFBD Reconstructed Broad-band (656.7 nm)' + smooth_label)
         axes[0].axis('off')
         fig.colorbar(im0, ax=axes[0], fraction=0.046, pad=0.04)
 
         im1 = axes[1].imshow(nb_data, cmap='gray', origin='lower', vmin=nb_vmin, vmax=nb_vmax)
-        axes[1].set_title('MOMFBD Reconstructed Narrow-band H-alpha Lyot (656.3 nm)')
+        axes[1].set_title('MOMFBD Reconstructed Narrow-band H-alpha Lyot (656.3 nm)' + smooth_label)
         axes[1].axis('off')
         fig.colorbar(im1, ax=axes[1], fraction=0.046, pad=0.04)
 
@@ -99,6 +113,11 @@ if __name__ == '__main__':
     parser.add_argument("--fits", type=str, default="hifi_momfbd_result.fits", help="Path to MOMFBD result FITS file")
     parser.add_argument("--raw_fits", type=str, default="/dat/andreuva/data/hifiplus/level1/20260714/hifiplus2_20260714_080658_sd.fts", help="Path to raw FITS dataset file")
     parser.add_argument("--output_png", type=str, default="momfbd_reconstructed.png", help="PNG output path")
+    parser.add_argument("--smooth", type=float, default=0.0,
+                        help="Gaussian sigma in pixels applied to the reconstructed panels before "
+                             "display (0 = off). Cosmetic only: the FITS is untouched and the raw "
+                             "panels are left alone.")
     args = parser.parse_args()
 
-    plot_momfbd_results(args.fits, output_png=args.output_png, raw_fits_path=args.raw_fits)
+    plot_momfbd_results(args.fits, output_png=args.output_png, raw_fits_path=args.raw_fits,
+                        smooth=args.smooth)

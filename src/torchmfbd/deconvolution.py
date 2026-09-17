@@ -189,6 +189,17 @@ class Deconvolution(object):
         if self.remove_tt:
             self.logger.info(f"Tip-tilt will be removed from the modes during optimization")
 
+        # Per-patch diffraction cutoffs. They stay None unless set_patch_cutoffs() is called.
+        # They live here and not in _define_basis(), which runs on every deconvolve().
+        self.patch_cutoffs = None
+        self.patch_cutoff_index = None
+        self.mask_diffraction_multi = None
+        self._mask_diff_batch = None
+
+        # Per-patch number of wavefront modes. Stays None unless set_patch_modes() is called
+        self.patch_n_modes = None
+        self._mode_mask_batch = None
+
        
     def _define_basis(self, n_modes=None):
 
@@ -249,10 +260,23 @@ class Deconvolution(object):
         ind_wavelengths = []
         unique_wavelengths = []
 
+        # Options of the Fourier noise filter applied to the object estimate
+        self.filter_mode = [None] * self.n_o
+        self.filter_threshold = [None] * self.n_o
+        self.filter_noise_band = [None] * self.n_o
+        self.filter_noise_shape = [None] * self.n_o
+        self.filter_noise_flat = [None] * self.n_o
+        self.filter_weight = [None] * self.n_o
+
         for i in range(self.n_o):
             self.cutoff[i] = self.config[f'object{i+1}']['cutoff']
             self.image_filter[i] = self.config[f'object{i+1}']['image_filter']
             self.s_u[i] = self.config[f'object{i+1}']['s_u_joint']
+            self.filter_mode[i] = self.config[f'object{i+1}']['filter_mode']
+            self.filter_threshold[i] = self.config[f'object{i+1}']['filter_threshold']
+            self.filter_noise_band[i] = self.config[f'object{i+1}']['filter_noise_band']
+            self.filter_noise_shape[i] = self.config[f'object{i+1}']['filter_noise_shape']
+            self.filter_noise_flat[i] = self.config[f'object{i+1}']['filter_noise_flat']
             w = self.config[f'object{i+1}']['wavelength']
             if w not in unique_wavelengths:
                 unique_wavelengths.append(w)
@@ -554,21 +578,26 @@ class Deconvolution(object):
 
         files = glob.glob(f"basis/{basis}_{int(self.config['telescope']['diameter'])}cm_{self.config['images']['n_pixel']}px_{wavelength}A_*.npz")
 
+        new_file = f"basis/{basis}_{int(self.config['telescope']['diameter'])}cm_{self.npix}px_{wavelength}A_{nmax}.npz"
+
         if len(files) == 0:
-            return False, f"basis/{basis}_{int(self.config['telescope']['diameter'])}cm_{self.npix}px_{wavelength}A_{nmax}.npz"
+            return False, new_file
         
-        nmodes = []
+        candidates = []
 
         for f in files:
             n = int(f.split('_')[-1].split('.')[0])
             if n >= nmax:
-                nmodes.append(n)
+                candidates.append((n, f))
                 self.logger.info(f"Found basis file with {n} modes that can be used for {nmax} modes")
 
-        if len(nmodes) == 0:
-            return False, f"basis/{basis}_{int(self.config['telescope']['diameter'])}cm_{self.npix}px_{wavelength}A_{nmax}.npz"
-        
-        filename = f"basis/{basis}_{int(self.config['telescope']['diameter'])}cm_{self.npix}px_{wavelength}A_{min(nmodes)}.npz"
+        if len(candidates) == 0:
+            return False, new_file
+
+        # Return the file that was actually found. Rebuilding the name from the number of
+        # modes alone misses the files that carry a hash of the pupil in their name, and
+        # then fails to open a basis that is right there.
+        n, filename = min(candidates)
         
         return True, filename
         
@@ -722,7 +751,272 @@ class Deconvolution(object):
             
             # Shifted mask used for the Lofdahl & Scharmer filter
             self.mask_diffraction_shift[i] = np.fft.fftshift(self.mask_diffraction[i].cpu().numpy())
-                     
+
+        # Per-patch masks, if several cutoffs have been requested with set_patch_cutoffs()
+        if self.patch_cutoff_index is not None:
+            self.mask_diffraction_multi = [None] * self.n_o
+            for i in range(self.n_o):
+                masks = [self._diffraction_mask_from_cutoff(i, c) for c in self.patch_cutoffs[i]]
+                self.mask_diffraction_multi[i] = torch.stack(masks, dim=0).to(self.device).float()
+
+        self._setup_radial_bins()
+
+    def _diffraction_mask_from_cutoff(self, i, cutoff):
+        """
+        Build the diffraction mask of object `i` for a given pair of cutoff frequencies.
+
+        Parameters
+        ----------
+        i : int
+            Index of the object.
+        cutoff : list
+            Lower and upper frequency of the cosine transition, in units of the
+            diffraction cutoff frequency.
+
+        Returns
+        -------
+        torch.Tensor
+            The mask, of shape (n_x, n_y).
+        """
+        mask = torch.zeros_like(self.rho[i])
+        mask[self.rho[i] <= cutoff[0]] = 1.0
+        ind = (self.rho[i] > cutoff[0]) & (self.rho[i] <= cutoff[1])
+        mask[ind] = torch.cos(np.pi / 2.0 * (self.rho[i][ind] - cutoff[0]) / (cutoff[1] - cutoff[0]))
+        return mask
+
+    def set_patch_cutoffs(self, cutoffs, index):
+        """
+        Use a different diffraction cutoff for different patches.
+
+        A single cutoff has to be a compromise between the parts of the field that carry
+        signal up to high frequencies and those that do not. Off-limb patches, for
+        instance, have no photospheric signal at all in the wideband channel, so every
+        frequency above the noise level only feeds noise into the wavefront estimation.
+        This lets each patch use the cutoff that matches its own signal content.
+
+        It has to be called after add_frames() and before deconvolve().
+
+        Parameters
+        ----------
+        cutoffs : list
+            For each object, a list of [lower, upper] cutoff pairs.
+        index : list
+            For each object, an integer tensor of shape (n_sequences,) selecting which
+            pair of `cutoffs` every patch uses.
+        """
+        self.patch_cutoffs = [list(c) for c in cutoffs]
+        self.patch_cutoff_index = [torch.as_tensor(idx).long().cpu() for idx in index]
+
+        # n_o is only known once the frames are combined, so count the objects here
+        for i in range(len(self.patch_cutoffs)):
+            n_cut = len(self.patch_cutoffs[i])
+            if int(self.patch_cutoff_index[i].max()) >= n_cut:
+                raise ValueError(f"Cutoff index out of range for object {i}: {int(self.patch_cutoff_index[i].max())} >= {n_cut}")
+            counts = torch.bincount(self.patch_cutoff_index[i], minlength=n_cut)
+            self.logger.info(f"Object {i} - per-patch cutoffs:")
+            for j, c in enumerate(self.patch_cutoffs[i]):
+                self.logger.info(f"     - {c} : {int(counts[j])} patches")
+
+    def _diffraction_mask(self, i):
+        """
+        Diffraction mask of object `i` for the batch of patches being processed, with
+        shape (n_batch, n_x, n_y) when per-patch cutoffs are in use and (1, n_x, n_y)
+        otherwise, so that it always broadcasts against the batch.
+        """
+        if self._mask_diff_batch is not None:
+            return self._mask_diff_batch[i]
+        return self.mask_diffraction_th[i][None, :, :]
+
+    def set_patch_modes(self, n_modes):
+        """
+        Use a different number of wavefront modes for different patches.
+
+        The wavefront is fitted to each patch independently, so in a patch with little
+        signal there is nothing but noise for the modes to fit, and a large basis will
+        fit it: the estimate then carries spurious power over the whole band that the
+        loss covers, which no noise filter can remove afterwards because it is
+        indistinguishable from signal. Off-limb patches are the extreme case. Giving
+        them fewer modes removes the freedom to do it, while the patches on the disk
+        keep the full basis they can actually constrain.
+
+        It has to be called after add_frames() and before deconvolve().
+
+        Parameters
+        ----------
+        n_modes : torch.Tensor or array
+            Number of modes of every patch, of shape (n_sequences,). Values are clipped
+            to the size of the basis.
+        """
+        self.patch_n_modes = torch.as_tensor(n_modes).long().cpu().clamp(min=2)
+        vals, counts = torch.unique(self.patch_n_modes, return_counts=True)
+        self.logger.info(f"Per-patch number of modes:")
+        for v, c in zip(vals.tolist(), counts.tolist()):
+            self.logger.info(f"     - {v} modes : {c} patches")
+
+    def _set_batch_masks(self, seq):
+        """
+        Select the diffraction mask and the active modes of every patch of the batch.
+        """
+        if self.patch_cutoff_index is None:
+            self._mask_diff_batch = None
+        else:
+            self._mask_diff_batch = [self.mask_diffraction_multi[i][self.patch_cutoff_index[i][seq].to(self.device)]
+                                     for i in range(self.n_o)]
+
+        if self.patch_n_modes is None:
+            self._mode_mask_batch = None
+        else:
+            n = self.patch_n_modes[seq].to(self.device)
+            self._mode_mask_batch = (torch.arange(self.n_modes, device=self.device)[None, :] < n[:, None]).float()
+
+    def _setup_radial_bins(self):
+        """
+        Precompute, for every object, the assignment of each Fourier pixel to a ring of
+        constant |nu|. Averaging the filter over these rings brings thousands of samples
+        into every estimate instead of one, which is what keeps the filter itself from
+        being as noisy as the quantity it is meant to suppress.
+        """
+        self.rad_index = [None] * self.n_o
+        self.rad_center = [None] * self.n_o
+        self.rad_count = [None] * self.n_o
+
+        n_bins = self.npix // 2
+
+        for i in range(self.n_o):
+            rho = self.rho[i]
+            d_rho = float(rho.max()) / n_bins
+            idx = torch.clamp((rho / d_rho).long(), max=n_bins - 1).reshape(-1)
+            self.rad_index[i] = idx.to(self.device)
+            self.rad_count[i] = torch.bincount(idx, minlength=n_bins).to(self.device).float().clamp(min=1.0)
+            self.rad_center[i] = (torch.arange(n_bins, device=self.device).float() + 0.5) * d_rho
+
+    def _radial_average(self, x, i):
+        """
+        Average `x` (n_batch, n_x, n_y) over rings of constant |nu|.
+
+        Returns
+        -------
+        torch.Tensor
+            The radial profiles, of shape (n_batch, n_bins).
+        """
+        n_batch = x.shape[0]
+        n_bins = self.rad_center[i].shape[0]
+        out = torch.zeros((n_batch, n_bins), device=x.device, dtype=x.dtype)
+        out.index_add_(1, self.rad_index[i], x.reshape(n_batch, -1))
+        return out / self.rad_count[i][None, :]
+
+    def wiener_filter(self, Sconj_S, Sconj_I, i):
+        """
+        Estimate the noise regularization of the object of every patch from the data.
+
+        The object estimated by inverting the multi-frame system,
+
+            O(nu) = sum_j S_j*(nu) D_j(nu) / sum_j |S_j(nu)|^2,
+
+        has a power  |O|^2 = N(nu) / sum_j |S_j|^2 + |O_true|^2,  so the quantity
+
+            Q(nu) = |sum_j S_j* D_j|^2 / sum_j |S_j|^2 = N(nu) + |O_true(nu)|^2 sum_j |S_j(nu)|^2
+
+        splits the power of the estimate into a noise term N, which is the noise power
+        spectrum of a single frame and does not depend on the wavefronts, and a signal
+        term. Averaging Q over rings of constant |nu| and calibrating N beyond the
+        diffraction cutoff - where the telescope cannot transmit signal, so Q is pure
+        noise - gives the signal-to-noise ratio of every patch as a function of
+        frequency, and with it the Wiener regularization that the object needs.
+
+        Parameters
+        ----------
+        Sconj_S : torch.Tensor
+            sum_j |S_j|^2 for every patch, of shape (n_batch, n_x, n_y).
+        Sconj_I : torch.Tensor
+            sum_j S_j* D_j for every patch, of shape (n_batch, n_x, n_y).
+        i : int
+            Index of the object.
+
+        Returns
+        -------
+        reg : torch.Tensor
+            The term to add to sum_j |S_j|^2 in the denominator of the object estimate.
+        support : torch.Tensor
+            Zero at the frequencies the filter drops entirely.
+        weight : torch.Tensor
+            The radially averaged Wiener weight, kept for diagnostics.
+        """
+        centers = self.rad_center[i]
+        eps = 1e-20
+
+        Sconj_S = Sconj_S.real
+        Q = (torch.conj(Sconj_I) * Sconj_I).real / (Sconj_S + eps)
+
+        Q_r = self._radial_average(Q, i)
+        S_r = self._radial_average(Sconj_S, i)
+
+        # Band beyond the diffraction cutoff, where Q measures the noise alone
+        lo, hi = self.filter_noise_band[i]
+        band = (centers >= lo) & (centers < hi)
+        if band.sum() < 2:
+            raise ValueError(f"filter_noise_band {self.filter_noise_band[i]} of object {i} contains too few frequencies")
+
+        if self.filter_noise_shape[i] == 'auto':
+            # Interpolating the frames (destretching) correlates the noise, so its power
+            # spectrum is not flat and a level measured beyond the diffraction cutoff
+            # underestimates it at lower frequencies. Recover its shape from the patches
+            # themselves: at frequencies above the signal band almost every patch is
+            # noise dominated, so a low quantile across patches of the profiles, each
+            # normalized by its own level in the calibration band, follows the noise.
+            level = torch.median(Q_r[:, band], dim=1).values.clamp(min=eps)
+            shape = torch.quantile(Q_r / level[:, None], 0.25, dim=0)
+
+            # Below the signal band the measurement is contaminated by the patches
+            # themselves, so hold the shape flat there, and keep it non-increasing:
+            # interpolation only ever removes high frequency power.
+            shape = torch.cummin(shape, dim=0).values
+            n_flat = int((centers < self.filter_noise_flat[i]).sum())
+            if 0 < n_flat < centers.shape[0]:
+                shape = torch.cat([shape[n_flat].expand(n_flat), shape[n_flat:]])
+            shape = shape / torch.median(shape[band])
+        else:
+            shape = torch.ones_like(centers)
+
+        # Noise level of each patch, from its own profile in the calibration band
+        level = torch.median((Q_r / shape[None, :])[:, band], dim=1).values.clamp(min=eps)
+        noise_r = level[:, None] * shape[None, :]
+
+        weight = (1.0 - noise_r / Q_r.clamp(min=eps)).clamp(0.0, 1.0)
+
+        # A single ring that happens to fluctuate low must not decide the outcome, so
+        # smooth over neighbouring rings first. This matters most for a patch containing
+        # the limb: the spectrum of that edge is strongly anisotropic and its radial
+        # profile dips, and without smoothing the filter would cut at the dip.
+        weight = torch.median(F.pad(weight[:, None, :], (1, 1), mode='replicate')
+                              .unfold(-1, 3, 1), dim=-1).values[:, 0, :]
+
+        # A ring can be no better than the best ring inside it: the object's power
+        # spectrum falls steeply with frequency, far faster than the noise does, so the
+        # signal-to-noise ratio has to be non-increasing. Imposing it drops the rings
+        # that are pure noise but fluctuate high, which is what the flood fill of the
+        # original filter was for, and unlike a hard support it cannot be tricked into
+        # cutting everything away by a single bad ring.
+        weight = torch.cummin(weight, dim=1).values
+
+        # Soft threshold. A hard cut leaves a step of `filter_threshold` at the edge of
+        # the support, and a step in Fourier space rings in the image - visible as bars
+        # along the limb, where the contrast is largest. Rescaling takes the weight to
+        # zero continuously instead.
+        thr = self.filter_threshold[i]
+        weight = ((weight - thr) / max(1.0 - thr, eps)).clamp(0.0, 1.0)
+
+        # Wiener regularization: sum_j |S_j|^2 (1 - w) / w reproduces the weight w where
+        # the OTF has its typical power, and additionally damps the individual
+        # frequencies at which sum_j |S_j|^2 happens to be close to zero. Where the
+        # weight is zero the clamp keeps it finite and `support` removes the frequency.
+        reg_r = S_r * (1.0 - weight) / weight.clamp(min=1e-3)
+
+        reg = reg_r[:, self.rad_index[i]].reshape(-1, self.npix, self.npix)
+        support = (weight > 0).float()[:, self.rad_index[i]].reshape(-1, self.npix, self.npix)
+
+        return reg, support, weight
+
     def compute_psfs(self, modes, diversity, jitter=None):
         """
         Compute the Point Spread Functions (PSFs) from the given modes.
@@ -741,6 +1035,11 @@ class Deconvolution(object):
         
 
         n_seq, n_f, n_active = modes.shape
+
+        # Restrict every patch to the modes it is allowed to use. Zeroing them here also
+        # zeroes their gradient, so the ones that are switched off stay at zero.
+        if self._mode_mask_batch is not None:
+            modes = modes * self._mode_mask_batch[:, None, 0:n_active]
                                         
         psf_norm = [None] * self.n_o
         otf = [None] * self.n_o
@@ -1072,8 +1371,11 @@ class Deconvolution(object):
         else:
             K, v0, p = None, None, None
             s_u = self.s_u[obj] * torch.ones_like(self.rho[obj]).to(self.device)
-            if hasattr(sigma[obj], 'dim') and sigma[obj].dim() == 3:
-                s2 = torch.mean(sigma[obj]**2, dim=1)
+            # Average over the frames but keep one noise variance per patch. Collapsing it
+            # to a single number makes every patch share the noise of the brightest ones,
+            # which for a field crossing the limb is wrong by a large factor.
+            if hasattr(sigma[obj], 'dim') and sigma[obj].dim() >= 2:
+                s2 = torch.mean(sigma[obj].reshape(sigma[obj].shape[0], -1)**2, dim=1)
             else:
                 s2 = torch.mean(sigma[obj]**2)
         
@@ -1230,7 +1532,17 @@ class Deconvolution(object):
 
             # Use Lofdahl & Scharmer (1994) filter
             if (self.image_filter[i] == 'scharmer'):
-                mask = self.lofdahl_scharmer_filter(Sconj_S, Sconj_I, s2_filt.detach()) * self.mask_diffraction_th[i][None, :, :]
+
+                if self.filter_mode[i] == 'wiener':
+                    # Weight every frequency by its signal-to-noise ratio instead of
+                    # keeping or dropping it, and regularize the inversion with the
+                    # noise-to-signal ratio so that the frequencies at which the OTF is
+                    # close to a zero are damped as well.
+                    reg, mask, self.filter_weight[i] = self.wiener_filter(Sconj_S.detach(), Sconj_I.detach(), i)
+                    mask = mask * self._diffraction_mask(i)
+                else:
+                    reg = None
+                    mask = self.lofdahl_scharmer_filter(Sconj_S, Sconj_I, s2_filt.detach()) * self._diffraction_mask(i)
                 
                 if self.loss_filter == 'wiener_time' or self.loss_filter == 'wiener_time_contrast':
                     Reg_Space = torch.ones_like(Sconj_S[0, ...]).to(self.device)
@@ -1262,6 +1574,8 @@ class Deconvolution(object):
                     
                     # out_ft[i] = s_u[None, ...] * Sconj_I / (s_u[None, ...] * Sconj_S + s2_term)
                     
+                elif reg is not None:
+                    out_ft[i] = Sconj_I / (Sconj_S + reg)
                 else:
                     out_ft[i] = Sconj_I / (Sconj_S + 1e-10)
                     # out_ft[i] = s_u[None, ...] * Sconj_I / (s_u[None, ...] * Sconj_S + s2_term)
@@ -1276,7 +1590,7 @@ class Deconvolution(object):
             if (self.image_filter[i] == 'tophat'):
                 out_ft[i] = Sconj_I / (Sconj_S + s2_term / s_u)
                 
-                out_filter_ft[i] = out_ft[i] * self.mask_diffraction_th[i][None, :, :]
+                out_filter_ft[i] = out_ft[i] * self._diffraction_mask(i)
 
             out_filter[i] = torch.fft.ifft2(out_filter_ft[i]).real
             
@@ -1404,7 +1718,7 @@ class Deconvolution(object):
                                 
                 loss_data = 0.5 * (du2 - hu_du2 / hu2) / s2_term
 
-                loss_data *= self.mask_diffraction_th[i][None, :, :]
+                loss_data *= self._diffraction_mask(i)
                 
                 # If we are doing a marginal estimation of the object, we 
                 # # need to add the effect of the marginalized object and also add 
@@ -1451,7 +1765,7 @@ class Deconvolution(object):
 
                         loss_prior = loss_prior_marginal + loss_prior_K + loss_prior_p + loss_prior_v0 + loss_prior_s2
                     
-                    loss_prior *= self.mask_diffraction_th[i][None, :, :]
+                    loss_prior *= self._diffraction_mask(i)
 
                     loss = loss_data + loss_prior
                 else:
@@ -1472,7 +1786,7 @@ class Deconvolution(object):
                 residual = frames_ft[i] - obj_ft[i][:, None, ...] * otf[i]
                 loss_data = 0.5 * torch.sum(residual * torch.conj(residual), dim=1) / s2_term
                 
-                loss_data *= self.mask_diffraction_th[i][None, :, :]
+                loss_data *= self._diffraction_mask(i)
                                                 
                 loss_prior = torch.tensor(0.0).to(self.device)
                 loss = loss_data
@@ -1496,7 +1810,7 @@ class Deconvolution(object):
                     Sconj_S = torch.sum(torch.conj(otf[i]) * otf[i], dim=1)
                     Sconj_I = torch.sum(torch.conj(otf[i]) * frames_ft[i], dim=1)
 
-                    mask = self.lofdahl_scharmer_filter(Sconj_S, Sconj_I, sigma[i]**2) * self.mask_diffraction_th[i][None, :, :]
+                    mask = self.lofdahl_scharmer_filter(Sconj_S, Sconj_I, sigma[i]**2) * self._diffraction_mask(i)
                                 
                     loss_data *= mask
                     loss_prior = torch.tensor(0.0).to(self.device)
@@ -1504,7 +1818,7 @@ class Deconvolution(object):
                 
                 # Use simple Wiener filter with tophat prior            
                 if (self.image_filter[i] == 'tophat'):                    
-                    loss = t1 - self.mask_diffraction_th[i][None, :, :] * t2 * torch.conj(t2) / (Q + 1e-10)
+                    loss = t1 - self._diffraction_mask(i) * t2 * torch.conj(t2) / (Q + 1e-10)
 
             
             # Weighted version of the loss computation
@@ -1542,7 +1856,7 @@ class Deconvolution(object):
         """
         out = [None] * self.n_o
         for i in range(self.n_o):
-            out[i] = image_ft[i] * self.mask_diffraction_th[i][None, :, :]
+            out[i] = image_ft[i] * self._diffraction_mask(i)
 
         return out
             
@@ -1775,6 +2089,8 @@ class Deconvolution(object):
                 frames_ft.append(self.frames_ft[i][seq, ...].to(self.device))
                 sigma_seq.append(self.sigma[i][seq, ...].to(self.device))
                 diversity_seq.append(self.diversity[i][seq, ...].to(self.device))
+
+            self._set_batch_masks(seq)
                 
             n_seq = len(seq)
 
@@ -2100,6 +2416,8 @@ class Deconvolution(object):
                 frames_ft.append(self.frames_ft[i][seq, ...].to(self.device))
                 sigma_seq.append(self.sigma[i][seq, ...].to(self.device))
                 diversity_seq.append(self.diversity[i][seq, ...].to(self.device))
+
+            self._set_batch_masks(seq)
 
             n_seq = len(seq)
                                                 

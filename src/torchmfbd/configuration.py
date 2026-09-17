@@ -73,6 +73,44 @@ def _check_config(config):
             if "s_u_joint" not in v:
                 v["s_u_joint"] = 100.0
 
+            # How the Loefdahl & Scharmer noise filter is turned into a Fourier filter.
+            #   'mask'   : the original binary flood-filled support. Every frequency inside
+            #              the support is kept at full amplitude, including those where the
+            #              noise is comparable to the signal.
+            #   'wiener' : the frequencies are weighted by the estimated signal-to-noise
+            #              ratio instead of being kept or dropped, and the support is the
+            #              radius at which that weight falls below filter_threshold.
+            if "filter_mode" not in v:
+                v["filter_mode"] = "mask"
+            if v["filter_mode"] not in ["mask", "wiener"]:
+                raise ValueError(f"Invalid value for filter_mode. It is {v['filter_mode']} but should be mask or wiener")
+
+            # Weight below which the filter is truncated to zero.
+            if "filter_threshold" not in v:
+                v["filter_threshold"] = 0.2
+
+            # Frequency band, in units of the diffraction cutoff, used to calibrate the
+            # noise level of each patch. It has to lie beyond the diffraction cutoff,
+            # where the telescope cannot transmit any signal.
+            if "filter_noise_band" not in v:
+                v["filter_noise_band"] = [0.9, 1.45]
+
+            # Shape of the noise power spectrum.
+            #   'white' : flat, the usual assumption.
+            #   'auto'  : measured from the patches themselves. Interpolating the frames
+            #             (destretching) correlates the noise and makes it strongly
+            #             non-white, so that a level calibrated beyond the diffraction
+            #             cutoff badly underestimates the noise at lower frequencies.
+            if "filter_noise_shape" not in v:
+                v["filter_noise_shape"] = "white"
+            if v["filter_noise_shape"] not in ["white", "auto"]:
+                raise ValueError(f"Invalid value for filter_noise_shape. It is {v['filter_noise_shape']} but should be white or auto")
+
+            # Frequency below which the measured noise shape is held flat. Below it the
+            # measurement is contaminated by the signal of the patches themselves.
+            if "filter_noise_flat" not in v:
+                v["filter_noise_flat"] = 0.25
+
     if "psd" not in config:
         config["psd"] = {}
         config["psd"]["K"] = 100.0

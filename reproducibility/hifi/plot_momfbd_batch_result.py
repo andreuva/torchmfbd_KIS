@@ -3,6 +3,7 @@ import glob
 import argparse
 import numpy as np
 from astropy.io import fits
+from scipy.ndimage import gaussian_filter
 from skimage.registration import phase_cross_correlation
 from tqdm import tqdm
 
@@ -77,12 +78,17 @@ def measure_drift_and_brightness(result_files, upsample_factor=20, max_step_shif
     return wb_shifts, nb_shifts, wb_scales, nb_scales
 
 
-def measure_display_range(result_files, wb_scales, nb_scales, sample_size=40, low_pct=0.4, high_pct=99.9):
+def measure_display_range(result_files, wb_scales, nb_scales, sample_size=40, low_pct=0.4, high_pct=99.9,
+                          smooth=0.0):
     """
     Pick one fixed (vmin, vmax) per channel for the whole movie, from the
     brightness-corrected data of an evenly spaced sample of frames, so
     matplotlib's per-frame auto-contrast doesn't reintroduce brightness
     flicker on top of the normalization above.
+
+    `smooth` has to match what the frames are plotted with: smoothing pulls in
+    the tails of the histogram, so a range measured on unsmoothed data would
+    stretch the movie slightly flatter than it should be.
     """
     idx = np.linspace(0, len(result_files) - 1, num=min(sample_size, len(result_files)), dtype=int)
     sample = [result_files[i] for i in np.unique(idx)]
@@ -91,14 +97,15 @@ def measure_display_range(result_files, wb_scales, nb_scales, sample_size=40, lo
     for path in tqdm(sample, desc="Pass 1/2: measuring display range"):
         wb = _load_channel(path, 'WIDEBAND_RECONSTRUCTED') * wb_scales[path]
         nb = _load_channel(path, 'NARROWBAND_RECONSTRUCTED') * nb_scales[path]
+        if smooth > 0:
+            wb = gaussian_filter(wb, smooth)
+            nb = gaussian_filter(nb, smooth)
         lo, hi = np.percentile(wb, [low_pct, high_pct])
         wb_lo.append(lo); wb_hi.append(hi)
         lo, hi = np.percentile(nb, [low_pct, high_pct])
         nb_lo.append(lo); nb_hi.append(hi)
 
-    # Widen the shared range slightly so the fixed display does not overstate
-    # local contrast while keeping brightness constant throughout the movie. Increasing the range factor will reduce contrast 
-    range_factor = 1.4                                                          
+    range_factor = 1.4
     wb_center = (np.median(wb_lo) + np.median(wb_hi)) / 2.0
     wb_half_range = (np.median(wb_hi) - np.median(wb_lo)) * range_factor / 2.0
     nb_center = (np.median(nb_lo) + np.median(nb_hi)) / 2.0
@@ -122,6 +129,10 @@ if __name__ == '__main__':
     parser.add_argument("--no_raw", action="store_true", help="Do not overlay raw frames, even if found")
     parser.add_argument("--limit", type=int, default=None, help="Limit total number of files to plot")
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing PNG files (default: skip existing)")
+    parser.add_argument("--smooth", type=float, default=0.0,
+                        help="Gaussian sigma in pixels applied to the reconstructed panels before "
+                             "display (0 = off). Cosmetic only: the FITS is untouched and the raw "
+                             "panels are left alone.")
     parser.add_argument("--no_stabilize", action="store_true",
                         help="Disable cross-correlation shift stabilization and brightness normalization across the sequence (original per-frame behavior)")
     args = parser.parse_args()
@@ -147,7 +158,7 @@ if __name__ == '__main__':
         wb_vrange = nb_vrange = None
     else:
         wb_shifts, nb_shifts, wb_scales, nb_scales = measure_drift_and_brightness(result_files)
-        wb_vrange, nb_vrange = measure_display_range(result_files, wb_scales, nb_scales)
+        wb_vrange, nb_vrange = measure_display_range(result_files, wb_scales, nb_scales, smooth=args.smooth)
         print(f"Sequence display range: WB {wb_vrange}, NB {nb_vrange}")
 
     success_count = 0
@@ -172,7 +183,7 @@ if __name__ == '__main__':
                 result_path, output_png=output_png, raw_fits_path=raw_fits_path,
                 wb_shift=wb_shifts[result_path], nb_shift=nb_shifts[result_path],
                 wb_scale=wb_scales[result_path], nb_scale=nb_scales[result_path],
-                wb_vrange=wb_vrange, nb_vrange=nb_vrange,
+                wb_vrange=wb_vrange, nb_vrange=nb_vrange, smooth=args.smooth,
             )
             success_count += 1
         except Exception as e:

@@ -1,3 +1,45 @@
+# MOMFBD configuration for GREGOR / HiFI+ H-alpha bursts crossing the limb.
+#
+# The numbers below are not generic defaults, they follow from what these data
+# actually contain. Measured on 20260715 with 100 frames per burst:
+#
+#   * The power that rises above the noise in the recorded frames reaches about
+#     0.3-0.45 of the diffraction cutoff on the disk in the wideband, and less
+#     than that everywhere else.
+#   * A split-burst test - reconstructing the even and the odd frames separately,
+#     registering the two results and correlating them - puts the last
+#     reproducible structure at ~0.35-0.45 of the cutoff for the wideband on the
+#     disk and ~0.3 for H-alpha off the limb. Beyond that the two halves of the
+#     same burst disagree completely, which is the definition of noise.
+#
+# That same split-burst correlation is what these settings were chosen on. At
+# 0.23 of the cutoff, on the disk in the wideband, it went from 0.24 with the
+# old configuration to 0.58 with this one: most of what the old one put in the
+# image at that scale was not reproducible, and is gone. The power in the
+# signal-free sky, which is spurious by definition, dropped by a factor ~1700.
+#
+# Two things caused the grain in the old images, and neither is the cutoff on
+# its own:
+#
+#   1. The binary Loefdahl-Scharmer support kept every frequency whose Wiener
+#      weight was above 0.2 at *full* amplitude - a factor ~5 of noise
+#      amplification right at the edge of the support - and it made that
+#      decision independently in each patch from a noise level estimated once
+#      for the whole field. That is where the rectangular seams came from.
+#   2. The wavefront was fitted with 90 modes per patch. Where a patch has no
+#      signal there is nothing but noise to fit, and 90 modes fit it well.
+#
+# So the cutoff here stays wide on the disk and the noise is dealt with at its
+# source: `filter_mode: wiener` weights each frequency by its measured
+# signal-to-noise ratio, and `nmax_modes` is small enough that the wavefront
+# cannot manufacture structure. The off-limb patches, which have neither signal
+# nor a wavefront worth fitting, get a narrower cutoff and a smaller basis from
+# the driver script.
+#
+# The driver script (hifi_momfbd.py / hifi_momfbd_batch_gpu.py) overrides
+# `cutoff` and the number of modes per patch. The values below are the on-disk
+# ones, which is what you get if you bypass the per-patch logic.
+
 telescope:
     diameter: 144.0
     central_obscuration : 40.0
@@ -5,40 +47,101 @@ telescope:
 images:
     n_pixel : 96
     pix_size : 0.0462
-    apodization_border : 14
-    remove_gradient_apodization : True  # Essential for off-limb patches
+    # Was 14. The window breaks the convolution model near the patch edge, and
+    # at the limb - a step of two orders of magnitude - that error is large
+    # enough to survive into the mosaic as bright and dark bars lying along the
+    # limb. They were always there; they only became visible once the grain that
+    # used to cover them was gone. A wider taper makes the error smaller, and the
+    # driver uses stride 32 so that the wider border can be cropped away and the
+    # patches still overlap by 24 px.
+    apodization_border : 20
+    # Essential here: every patch near the limb sits on a steep intensity
+    # gradient, and a gradient that does not wrap around periodically leaks
+    # power over the whole spectrum. Removing the plane before apodizing and
+    # adding it back afterwards keeps the patch spectra clean.
+    remove_gradient_apodization : True
 
-object1:
+object1:                      # camera 2 - 656.7 nm wideband
     wavelength : 6567.0
     image_filter: scharmer
-    cutoff : [0.80, 0.85]
+    cutoff : [0.70, 0.85]
+    # 'wiener' weights every frequency by the signal-to-noise ratio measured for
+    # that patch instead of keeping or dropping it. The original 'mask' keeps
+    # every frequency whose Wiener weight is above 0.2 at *full* amplitude,
+    # which amplifies the noise by up to a factor 5 right at the edge of the
+    # support, and it does so patch by patch, which is where the visible
+    # rectangular seams came from.
+    filter_mode : wiener
+    filter_threshold : 0.3
+    # Band used to calibrate the noise level of each patch. It sits beyond the
+    # diffraction cutoff, where the telescope cannot transmit any signal, so
+    # whatever power is there is noise.
+    filter_noise_band : [0.9, 1.45]
+    # 'white' assumes a flat noise power spectrum, which is what the raw frames
+    # have. Set to 'auto' if you ever feed in frames that have been interpolated
+    # more heavily than the destretching here does: interpolation correlates the
+    # noise and a level calibrated beyond the cutoff then underestimates it at
+    # lower frequencies by up to a factor of several.
+    filter_noise_shape : white
     s_u_joint : 100.0
 
-object2:
+object2:                      # camera 1 - 656.3 nm H-alpha Lyot, 0.06 nm FWHM
     wavelength : 6563.0
     image_filter: scharmer
-    cutoff : [0.80, 0.85]
+    # Narrower than the wideband: H-alpha has less high frequency power on the
+    # disk than the continuum, and the camera runs at 24 dB gain against the
+    # wideband camera's 0 dB, so its noise floor is higher.
+    cutoff : [0.50, 0.65]
+    filter_mode : wiener
+    filter_threshold : 0.3
+    filter_noise_band : [0.9, 1.45]
+    filter_noise_shape : white
     s_u_joint : 100.0
 
 optimization:
     gpu : -1
     transform : softplus
-    softplus_scale : 1.0    
+    softplus_scale : 1.0
     lr_obj : 0.02
     lr_modes : 0.05
     lr_prior : 0.2
     loss_type: joint
 
 regularization:
-     iuwt1:
+    # Only active with deconvolve(infer_object=True). The driver runs with
+    # infer_object=False - the object follows analytically from the frames and
+    # the current PSFs - so this block currently does nothing. Left in place for
+    # when the object is optimized explicitly.
+    iuwt1:
         variable : object
         lambda : 0.001
         nbands : 5
 
 psf:
     model : kl
-    nmax_modes : 90
-    jitter : False
+    # Was 90. The wavefront is fitted to each patch on its own, so in a patch
+    # with no signal there is nothing but noise for the modes to fit - and a
+    # 90-mode basis fits it well. Reconstructing pure synthetic white noise with
+    # this pipeline produces a spurious power excess of a factor ~7 over the
+    # whole band admitted by `cutoff` with 90 modes, ~4.6 with 44 and ~3.2 with
+    # 20, and none at all with the mode optimization switched off. No noise
+    # filter can undo it afterwards, because the filter measures that same
+    # inflated power and concludes there is signal there.
+    #
+    # Narrowing `cutoff` does not remove it, it only concentrates it into the
+    # remaining band, which is why the off-limb sky went from fine grain to
+    # coarse blotches when the cutoff alone was lowered. The number of modes is
+    # the knob that removes it.
+    #
+    # 44 is what the disk can constrain. The driver drops the off-limb patches
+    # to 20 with set_patch_modes(). This is the single change that mattered most:
+    # with 90 modes everywhere the split-burst correlation on the disk was 0.29,
+    # with 44/20 it is 0.58.
+    nmax_modes : 44
+    # Three more free parameters per frame is more freedom to fit noise, for a
+    # second-order effect. Note that `False` was not a valid value: the code
+    # compares this key against 'none'/'fast'/'slow'.
+    jitter : none
 
 initialization:
     object : contrast
