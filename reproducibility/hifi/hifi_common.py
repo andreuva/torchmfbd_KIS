@@ -150,8 +150,7 @@ def classify_patches(wb_patches, scale=1.0, dark_fraction=0.25, min_contrast=8.0
 def reconstruct_burst(nb_frames, wb_frames, config, device,
                       patch_size=96, stride_size=32, n_iterations=250,
                       simultaneous_sequences=200, destretch=True,
-                      disk_cutoff=((0.70, 0.85), (0.50, 0.65)),
-                      limb_cutoff=((0.35, 0.50), (0.40, 0.55)),
+                      disk_cutoff=None, limb_cutoff=None,
                       disk_modes=44, limb_modes=20,
                       regime='auto', n_sigma_frames=8, logger=print):
     """
@@ -164,9 +163,10 @@ def reconstruct_burst(nb_frames, wb_frames, config, device,
     config : str or dict
         torchmfbd configuration.
     device : torch.device
-    disk_cutoff, limb_cutoff : pair of (lower, upper)
+    disk_cutoff, limb_cutoff : optional pair of (lower, upper)
         Fourier cutoffs, in units of the diffraction cutoff, for the wideband
-        (object 1) and the narrow band (object 2), for each of the two regimes.
+        (object 1) and the narrow band (object 2), respectively. If omitted,
+        values are read from each object's `cutoff` and `off_limb_cutoff` config.
     disk_modes, limb_modes : int
         Number of wavefront modes each regime is allowed to use. `disk_modes`
         must not exceed psf/nmax_modes in the configuration.
@@ -206,6 +206,17 @@ def reconstruct_burst(nb_frames, wb_frames, config, device,
     dec = torchmfbd.Deconvolution(config)
     apod = int(dec.config['images']['apodization_border'])
 
+    if disk_cutoff is None:
+        disk_cutoff = tuple(
+            dec.config[f'object{i}'].get('cutoff', default)
+            for i, default in ((1, (0.70, 0.85)), (2, (0.50, 0.65)))
+        )
+    if limb_cutoff is None:
+        limb_cutoff = tuple(
+            dec.config[f'object{i}'].get('off_limb_cutoff', default)
+            for i, default in ((1, (0.35, 0.50)), (2, (0.40, 0.55)))
+        )
+
     patchify = torchmfbd.Patchify4D()
     wb_patches = patchify.patchify(wb, patch_size=patch_size, stride_size=stride_size, flatten_sequences=True)
     nb_patches = patchify.patchify(nb, patch_size=patch_size, stride_size=stride_size, flatten_sequences=True)
@@ -214,8 +225,10 @@ def reconstruct_burst(nb_frames, wb_frames, config, device,
     # varies over the field, not from frame to frame - and estimating it for all
     # of them would dominate the run time.
     k = min(n_sigma_frames, n_frames)
+    logger(f"Estimating noise for wideband and narrowband patches ({k} frames per patch)...")
     wb_sigma = torchmfbd.compute_noise(wb_patches[:, :k]).median(dim=1, keepdim=True).values
     nb_sigma = torchmfbd.compute_noise(nb_patches[:, :k]).median(dim=1, keepdim=True).values
+    logger("Noise estimation complete.")
 
     if regime == 'auto':
         index, crosses_limb = classify_patches(wb_patches, scale=float(wb_scale.mean()))

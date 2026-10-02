@@ -46,7 +46,7 @@ if __name__ == '__main__':
     parser.add_argument("--output_dir", type=str, default="results_momfbd", help="Output directory")
     parser.add_argument("--config", type=str, default="hifi_momfbd.yaml", help="Configuration YAML")
     parser.add_argument("--gpu", type=int, default=0, help="GPU index, -1 for CPU")
-    parser.add_argument("--n_frames", type=int, default=100, help="Frames per camera per burst")
+    parser.add_argument("--n_frames", type=int, default=100, help="Frames used per camera per burst")
     parser.add_argument("--patch_size", type=int, default=96, help="Patch size")
     parser.add_argument("--start_time", type=str, default=None, help="Start time (HHMMSS)")
     parser.add_argument("--end_time", type=str, default=None, help="End time (HHMMSS)")
@@ -57,7 +57,7 @@ if __name__ == '__main__':
     parser.add_argument("--no_destretch", action="store_true", help="Skip destretching")
     parser.add_argument("--regime", choices=['auto', 'on_disk', 'off_limb'], default='auto',
                         help="'auto' decides on-disk vs off-limb per patch, per burst, which matters "
-                             "because a dataset can cross the limb during a run")
+                             "because a dataset can cross the limb during a run, off_limb setting labels every patch as off_limb, which is rarely useful")
     parser.add_argument("--disk_modes", type=int, default=44, help="Wavefront modes, on-disk patches")
     parser.add_argument("--limb_modes", type=int, default=20, help="Wavefront modes, off-limb patches")
     parser.add_argument("--n_iterations", type=int, default=250, help="Optimization iterations")

@@ -64,7 +64,8 @@ images:
 object1:                      # camera 2 - 656.7 nm wideband
     wavelength : 6567.0
     image_filter: scharmer
-    cutoff : [0.70, 0.85]
+    cutoff : [0.70, 0.85]             # On-disk patches: [full transmission, taper end]
+    off_limb_cutoff : [0.35, 0.50]    # Used for patches classified as off-limb
     # 'wiener' weights every frequency by the signal-to-noise ratio measured for
     # that patch instead of keeping or dropping it. The original 'mask' keeps
     # every frequency whose Wiener weight is above 0.2 at *full* amplitude,
@@ -91,7 +92,8 @@ object2:                      # camera 1 - 656.3 nm H-alpha Lyot, 0.06 nm FWHM
     # Narrower than the wideband: H-alpha has less high frequency power on the
     # disk than the continuum, and the camera runs at 24 dB gain against the
     # wideband camera's 0 dB, so its noise floor is higher.
-    cutoff : [0.50, 0.65]
+    cutoff : [0.50, 0.65]             # On-disk patches: [full transmission, taper end]
+    off_limb_cutoff : [0.40, 0.55]    # Used for patches classified as off-limb
     filter_mode : wiener
     filter_threshold : 0.3
     filter_noise_band : [0.9, 1.45]
@@ -136,7 +138,7 @@ psf:
     # 44 is what the disk can constrain. The driver drops the off-limb patches
     # to 20 with set_patch_modes(). This is the single change that mattered most:
     # with 90 modes everywhere the split-burst correlation on the disk was 0.29,
-    # with 44/20 it is 0.58.
+    # with 44/20 it is 0.58.hifi
     nmax_modes : 44
     # Three more free parameters per frame is more freedom to fit noise, for a
     # second-order effect. Note that `False` was not a valid value: the code

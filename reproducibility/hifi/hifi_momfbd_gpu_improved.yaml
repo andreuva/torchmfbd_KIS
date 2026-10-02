@@ -1,7 +1,7 @@
 telescope:
     diameter: 144.0
     central_obscuration : 40.0
-    # spider : 0            # GREGOR spider width in cm. Left unset (0) - set it only
+    # spider : 20            # GREGOR spider width in cm. Left unset (0) - set it only
     #                       # if the real value is known; a wrong value degrades the pupil model.
 
 images:
@@ -13,15 +13,17 @@ images:
 object1:
     wavelength : 6567.0
     image_filter: scharmer
-    cutoff : [0.80, 0.85]
-    s_u_joint : 100.0              #s_u_joint Value should be determined individually for each dataset.
+    cutoff : [0.80, 0.85]             # On-disk patches: [full transmission, taper end]
+    off_limb_cutoff : [0.35, 0.50]    # Used for patches classified as off-limb
+    s_u_joint : 100.0             #s_u_joint Value should be determined individually for each dataset.
                                   #Lower Values introduce less noise (smoother)
                                   #Values above 100 trust the data more and reconstruct more agressivly 
 
 object2:
     wavelength : 6563.0
     image_filter: scharmer
-    cutoff : [0.80, 0.85]
+    cutoff : [0.80, 0.85]             # On-disk patches: [full transmission, taper end]
+    off_limb_cutoff : [0.40, 0.55]    # Used for patches classified as off-limb
     s_u_joint : 100.0
 
 optimization:
