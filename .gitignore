@@ -225,3 +225,5 @@ __marimo__/
 .streamlit/secrets.toml
 
 *.mp4
+
+torchmfbd/reproducibility/hifi/testrun.sh
