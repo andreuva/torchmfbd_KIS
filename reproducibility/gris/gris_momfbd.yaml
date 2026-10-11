@@ -1,0 +1,91 @@
+# MOMFBD configuration for the CRISP 630 nm scans of 2026-10-06 (SAC "gris" dataset).
+#
+# This is hifi_momfbd.yaml (the configuration validated on HiFI+ H-alpha bursts, see the
+# comments there for why each value is what it is) with only the optics and the patch size
+# changed to this instrument. The driver gris_momfbd.py forces every patch to the on-disk
+# regime, so the off-limb settings of the HiFi file are not needed and were removed.
+
+telescope:
+    diameter: 144.0               # GREGOR, same telescope as HiFI+
+    central_obscuration : 40.0
+
+images:
+    # 128 px at 0.032"/px is 4.1", the same angular patch as the validated 96 px at 0.0462"
+    # on HiFI+, and it keeps the pupil sampled over 45 px (34 px with 96 px here). The driver
+    # uses patch_size 128 and stride 64: with the 20 px apodization border cropped from every
+    # patch edge, neighbouring patches still overlap by 24 px, the HiFi overlap rule, and a
+    # 1024 px crop tiles exactly into 15 x 15 patches. The KL basis for this size is computed
+    # once on the first run and cached in basis/ next to the scripts (do not run from the hifi
+    # directory: its basis/ cache is keyed without the pixel size and would be reused wrongly).
+    n_pixel : 128
+    pix_size : 0.032              # arcsec/px, both cameras (Thomas Berkefeld, 9 Oct 2026)
+    apodization_border : 20
+    remove_gradient_apodization : True
+
+# object1 is the broad band (BB, 0.95 ms exposures), object2 the narrow band (NB, 9.5 ms).
+# Both get the same wavelength: the scan covers 6300.3-6303.4 A, a 0.05 % range that changes
+# nothing in the pupil or the frequency grid, and one value means one shared basis for both
+# objects and for every step. The cutoffs are the HiFi on-disk values; the Wiener filter
+# weights each frequency by the signal-to-noise measured in the patch, so the NB does not need
+# a narrower band a priori. If the line-core steps come out grainy, narrow the NB cutoff to
+# [0.50, 0.65] and/or lower psf/nmax_modes (see hifi_momfbd.yaml for the reasoning).
+object1:
+    wavelength : 6302.0
+    image_filter: scharmer
+    cutoff : [0.70, 0.85]             # [full transmission, taper end], in units of the diffraction cutoff
+    filter_mode : wiener
+    filter_threshold : 0.3
+    filter_noise_band : [0.9, 1.45]   # beyond the diffraction cutoff; the data are sampled out to 1.41
+    filter_noise_shape : white
+    s_u_joint : 100.0
+
+object2:
+    wavelength : 6302.0
+    image_filter: scharmer
+    cutoff : [0.70, 0.85]
+    filter_mode : wiener
+    filter_threshold : 0.3
+    filter_noise_band : [0.9, 1.45]
+    filter_noise_shape : white
+    s_u_joint : 100.0
+
+optimization:
+    gpu : -1                      # overridden by the driver's --gpu
+    transform : softplus
+    softplus_scale : 1.0
+    lr_obj : 0.02
+    lr_modes : 0.05
+    lr_prior : 0.2
+    loss_type: joint
+
+regularization:
+    # Only active with deconvolve(infer_object=True); the driver runs with infer_object=False.
+    iuwt1:
+        variable : object
+        lambda : 0.001
+        nbands : 5
+
+psf:
+    model : kl
+    nmax_modes : 44               # what the disk can constrain without fitting noise (hifi_momfbd.yaml)
+    jitter : none
+
+initialization:
+    object : contrast
+    modes_std : 0.0
+
+annealing:
+    type: linear
+    start_pct : 0.0
+    end_pct : 0.6
+
+priors:
+    K:
+        mean: 10.0
+        sigma: 1.0
+    v0:
+        mean: 0.1
+        sigma: 1.0
+    p:
+        mean: 2.0
+        sigma: 1.0
