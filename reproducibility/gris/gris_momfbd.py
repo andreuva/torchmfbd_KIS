@@ -59,6 +59,12 @@ def process_step(nb_path, bb_path, out_path, config_dict, args, device, offset):
         destretch=not args.no_destretch, regime='on_disk',
         disk_modes=args.modes, limb_modes=args.modes, logger=tqdm.write)
 
+    # The blending weights of unpatchify vanish on the outermost pixel of every patch, so the
+    # outer pixel ring of the mosaic, covered by a single patch, comes out exactly zero.
+    # Drop it; APODCROP (written from meta['apod']) then still gives the mosaic origin.
+    obj_bb, obj_nb = obj_bb[1:-1, 1:-1], obj_nb[1:-1, 1:-1]
+    meta['apod'] += 1
+
     # reconstruct_burst() normalises every frame by its 95th percentile, so its result is
     # near 1 at every step. Scaling it back keeps the line profile across the scan.
     obj_bb = obj_bb * scales['bb']
@@ -80,6 +86,7 @@ def process_step(nb_path, bb_path, out_path, config_dict, args, device, offset):
         'BBSCALE': (round(scales['bb'], 3), 'BB normalisation (mean per-frame p95) [ADU]'),
         'BUNIT': ('ADU', 'Reconstructions rescaled to the input units'),
         'PIXSCALE': (gris.PIX_SCALE, 'Pixel scale [arcsec/px]'),
+        'APODCROP': (meta['apod'], 'Mosaic origin in the crop [px]: apodization+1'),
     }
     hifi.write_output(out_path, header, obj_bb, obj_nb, dec, meta,
                       config_name=os.path.basename(args.config), extra=extra)
@@ -102,7 +109,8 @@ if __name__ == '__main__':
     parser.add_argument("--n_iterations", type=int, default=250)
     parser.add_argument("--simultaneous_seq", type=int, default=225,
                         help="Patches optimised together; 225 is the whole 1024 px field in one batch")
-    parser.add_argument("--modes", type=int, default=44, help="Wavefront modes; must not exceed psf/nmax_modes")
+    parser.add_argument("--modes", type=int, default=None,
+                        help="Wavefront modes per patch; default psf/nmax_modes of the config")
     parser.add_argument("--no_destretch", action="store_true")
     parser.add_argument("--steps", type=str, default=None, help="Scan steps to do, e.g. '1,39,100' or '30-50'")
     parser.add_argument("--limit", type=int, default=None, help="Do at most this many steps")
@@ -119,6 +127,18 @@ if __name__ == '__main__':
     with open(args.config) as f:
         config_dict = yaml.safe_load(f)
     config_dict['optimization']['gpu'] = args.gpu
+    # The KL basis has to cover whole radial orders: nmax_modes + 1 must be a triangular number
+    # (2, 5, 9, 14, 20, 27, 35, 44, 54, ...), otherwise torchmfbd stops on every step. To use
+    # fewer modes per patch keep nmax_modes at a valid value and pass --modes.
+    n_max = int(config_dict['psf']['nmax_modes'])
+    order = (np.sqrt(8 * (n_max + 1) + 1) - 1) / 2
+    if order != int(order):
+        valid = [n * (n + 1) // 2 - 1 for n in range(2, 12)]
+        raise SystemExit(f"psf/nmax_modes {n_max} is not a whole number of radial orders; use one of {valid}")
+    if args.modes is None:
+        args.modes = n_max
+    if args.modes > config_dict['psf']['nmax_modes']:
+        raise SystemExit(f"--modes {args.modes} exceeds psf/nmax_modes {config_dict['psf']['nmax_modes']}")
     if config_dict['images']['n_pixel'] != args.patch_size:
         raise SystemExit(f"--patch_size {args.patch_size} must equal images/n_pixel "
                          f"{config_dict['images']['n_pixel']} in {args.config}")

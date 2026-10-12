@@ -25,7 +25,8 @@ images:
 # object1 is the broad band (BB, 0.95 ms exposures), object2 the narrow band (NB, 9.5 ms).
 # Both get the same wavelength: the scan covers 6300.3-6303.4 A, a 0.05 % range that changes
 # nothing in the pupil or the frequency grid, and one value means one shared basis for both
-# objects and for every step. The cutoffs are the HiFi on-disk values; the Wiener filter
+# objects and for every step. The cutoffs are the HiFi on-disk wideband values, used for both
+# channels here (HiFi's NB used [0.50, 0.65]); the Wiener filter
 # weights each frequency by the signal-to-noise measured in the patch, so the NB does not need
 # a narrower band a priori. If the line-core steps come out grainy, narrow the NB cutoff to
 # [0.50, 0.65] and/or lower psf/nmax_modes (see hifi_momfbd.yaml for the reasoning).

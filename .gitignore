@@ -227,3 +227,5 @@ __marimo__/
 *.mp4
 
 torchmfbd/reproducibility/hifi/testrun.sh
+
+*tuning
