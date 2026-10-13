@@ -30,8 +30,13 @@ show that the movie scans in wavelength. The spectrum is divided by a straight c
 the first and last 3 steps. The box is outlined on BB (in NB the inset covers the top-right
 corner, where the 35-40" box lies).
 
+--smooth SIGMA (cube only, display only, off by default) smooths both channels with a Gaussian of
+that width in px (BB after the running mean). It trades a uniform loss of fine contrast for less
+of the burst-to-burst reconstruction grain (README, "Texture in the umbrae").
+
 One display range per channel is used for the whole scan so that the line darkening is visible
-from step to step.
+from step to step. The figure title gives the telescope, the instrument and the date, the
+subtitle the step and the wavelength; the colour bars are in pixel counts (the ADU of the data).
 """
 
 import argparse
@@ -46,6 +51,7 @@ import matplotlib.pyplot as plt     # noqa: E402
 from matplotlib.patches import Rectangle  # noqa: E402
 from astropy.io import fits         # noqa: E402
 from PIL import Image               # noqa: E402
+from scipy import ndimage as ndi    # noqa: E402
 from tqdm import tqdm               # noqa: E402
 
 import gris_common as gris          # noqa: E402
@@ -56,7 +62,8 @@ LEFT = 90        # y tick labels and label, left of each panel
 RIGHT = 130      # colour bar and its labels, right of each panel
 BELOW = 70       # x tick labels and label, below each panel
 ABOVE = 40       # panel title
-TOP = 50         # figure title
+TOP = 50         # figure title and subtitle
+TELESCOPE = 'GREGOR'   # not in the headers
 
 
 def load_result(path):
@@ -84,35 +91,47 @@ def steps_from_files(files, data_root=None):
     for path in files:
         header, bb, nb = load_result(path)
         info = dict(scan=header['SCAN'], step=int(header['SCANSTEP']), wave=float(header['WAVE']),
-                    date=header.get('DATE-OBS', ''), pix=float(header.get('PIXSCALE', gris.PIX_SCALE)),
+                    date=header.get('DATE-OBS', '')[:10], pix=float(header.get('PIXSCALE', gris.PIX_SCALE)),
+                    instrument=header.get('INSTRUME', ''), telescope=header.get('TELESCOP', TELESCOPE),
                     png=os.path.basename(path).replace('.fits', '.png'))
         raw = raw_frames(header, nb.shape, data_root) if data_root else None
         yield info, bb, nb, raw
 
 
-def steps_from_cube(path, bb_mean=1):
+def steps_from_cube(path, bb_mean=1, smooth=None, data_root=gris.DATA_ROOT):
     """(info, bb, nb, None) per plane of a cube written by gris_make_cube.py; NaN planes skipped.
 
     With bb_mean = N, BB is the mean of the valid planes among the N centred on the step (fewer
-    at the ends of the scan)."""
+    at the ends of the scan). With smooth = sigma, both channels are smoothed with a Gaussian of
+    that width (display only, see --smooth)."""
     half = bb_mean // 2
     with fits.open(path) as f:
         h = f[0].header
         nb_cube, bb_cube, wave = f['NB'].data, f['BB'].data, f['WAVE'].data
         n = nb_cube.shape[0]
         valid = [bool(np.isfinite(bb_cube[k]).all()) for k in range(n)]   # a missing step is NaN
+        try:                  # the cube keeps no date: take it from the first raw file of the scan
+            date = fits.getheader(gris.list_steps(h['SCAN'], data_root)[0][0]).get('DATE-OBS', '')[:10]
+        except Exception:
+            date = ''
+        if not date:
+            print(f"WARNING: no DATE-OBS found for scan {h.get('SCAN')} under {data_root}; the titles carry no date")
         for k in range(n):
             if not valid[k]:
                 continue
             window = [j for j in range(max(0, k - half), min(n, k + half + 1)) if valid[j]]
             bb = np.mean([bb_cube[j].astype(np.float32) for j in window], axis=0)
             nb = nb_cube[k].astype(np.float32)
+            if smooth:        # display only: the same Gaussian for both channels, everywhere
+                bb = ndi.gaussian_filter(bb, smooth)
+                nb = ndi.gaussian_filter(nb, smooth)
             step0 = int(h['STEP0'])
             step = step0 + k
             bb_title = 'MOMFBD broad band'
             if bb_mean > 1:
                 bb_title += f', mean of {len(window)} steps ({step0 + window[0]}-{step0 + window[-1]})'
-            info = dict(scan=h.get('SCAN', ''), step=step, wave=float(wave[k]), date='',
+            info = dict(scan=h.get('SCAN', ''), step=step, wave=float(wave[k]), date=date,
+                        instrument=h.get('INSTRUME', ''), telescope=h.get('TELESCOP', TELESCOPE),
                         pix=float(h.get('PIXSCALE', gris.PIX_SCALE)), bb_title=bb_title,
                         png=f"step{step:03d}_{float(wave[k]):.4f}A_cube.png")
             yield info, bb, nb, None
@@ -225,14 +244,15 @@ def plot_step(info, bb, nb, raw, bb_range, nb_range, png, spectrum=None):
         ax.tick_params(labelsize=12)
         cax = fig.add_axes([(x0 + nx + 14) / width, y0 / height, 24 / width, ny / height])
         mappable = plt.cm.ScalarMappable(plt.Normalize(*vrange), cmap='gray')
-        fig.colorbar(mappable, cax=cax).set_label('ADU', fontsize=13)
+        fig.colorbar(mappable, cax=cax).set_label('Pixel counts', fontsize=13)
         cax.tick_params(labelsize=12)
     if spectrum is not None:                     # cube mode: one row, BB left, NB right
         y0 = height - TOP - (ABOVE + ny + BELOW) + BELOW
         draw_spectrum(fig, spectrum, info['wave'], LEFT, LEFT + (LEFT + nx + RIGHT), y0, nx, ny)
-    date = f"  ({info['date']})" if info['date'] else ''
-    fig.suptitle(f"{info['scan']}  step {info['step']}  λ = {info['wave']:.4f} Å{date}", fontsize=18,
-                 y=1 - 12 / height, va='top')
+    title = ' / '.join(t for t in (info.get('telescope', ''), info.get('instrument', '')) if t)
+    fig.suptitle(f"{title}   {info['date']}".strip(), fontsize=16, y=1 - 3 / height, va='top')
+    fig.text(0.5, 1 - 26 / height, f"step {info['step']}   λ = {info['wave']:.4f} Å", fontsize=14,
+             ha='center', va='top')
     fig.canvas.draw()
     rgba = np.asarray(fig.canvas.buffer_rgba())
     plt.close(fig)
@@ -268,13 +288,15 @@ if __name__ == '__main__':
     source.add_argument("--results_dir", help="Per-step results (step*_momfbd.fits): raw vs reconstruction")
     source.add_argument("--cube", help="Cube from gris_make_cube.py: reconstructions in the scan geometry")
     parser.add_argument("--output_dir", required=True)
-    parser.add_argument("--data_root", default=gris.DATA_ROOT, help="Raw data, for the raw-frame panels")
+    parser.add_argument("--data_root", default=gris.DATA_ROOT, help="Raw data: raw-frame panels, and the date in the title in cube mode")
     parser.add_argument("--no_raw", action="store_true", help="Per-step mode: reconstructions only")
     parser.add_argument("--bb_mean", type=int, default=1,
                         help="Cube only: show BB as the mean of this many steps centred on each step (odd)")
     parser.add_argument("--quiet_sun_box", type=float, nargs=4, metavar=('X0', 'X1', 'Y0', 'Y1'), default=None,
                         help="Cube only: inset with the mean NB spectrum of this box [arcsec on the figure "
                              "axes] and an arrow at the wavelength on display, e.g. 35 40 35 40")
+    parser.add_argument("--smooth", type=float, default=None, metavar='SIGMA',
+                        help="Cube only, display only: Gaussian of this width [px] for both channels (default: none)")
     parser.add_argument("--movie", default=None, help="Also write an H.264 movie of the figures to this file")
     parser.add_argument("--fps", type=int, default=8)
     parser.add_argument("--crf", type=int, default=0,
@@ -288,6 +310,10 @@ if __name__ == '__main__':
         parser.error("--bb_mean must be odd and at least 1")
     if args.bb_mean > 1 and not args.cube:
         parser.error("--bb_mean needs --cube: the per-step files are not in a common geometry")
+    if args.smooth and not args.cube:
+        parser.error("--smooth needs --cube")
+    if args.smooth is not None and args.smooth < 0:
+        parser.error("--smooth must not be negative")
     if args.quiet_sun_box and not args.cube:
         parser.error("--quiet_sun_box needs --cube: the per-step files are not in a common geometry")
     if args.quiet_sun_box and not (args.quiet_sun_box[0] < args.quiet_sun_box[1]
@@ -301,8 +327,10 @@ if __name__ == '__main__':
         os.makedirs(os.path.dirname(os.path.abspath(args.movie)), exist_ok=True)
 
     if args.cube:
-        def frames(with_raw=False):
-            return itertools.islice(steps_from_cube(args.cube, args.bb_mean), args.limit)
+        def frames(with_raw=False):   # with_raw marks the plotting pass: the display range stays unsmoothed
+            return itertools.islice(steps_from_cube(args.cube, args.bb_mean, args.smooth if with_raw else None,
+                                                    args.data_root),
+                                    args.limit)
     else:
         files = sorted(glob.glob(os.path.join(args.results_dir, 'step*_momfbd.fits')))[:args.limit]
         if not files:

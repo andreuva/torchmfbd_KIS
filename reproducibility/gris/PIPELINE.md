@@ -91,7 +91,8 @@ The reader's docstring summarises what was measured on these files:
   exists ([gris_momfbd.py:177-193](gris_momfbd.py#L177-L193)), so a run is resumed by starting it
   again (with a new `TAG`).
 * Then, per scan: `gris_make_cube.py --results_dir results_momfbd_v2/<scan> --gpu 0 --border 20`
-  and `gris_plot.py --cube ... --bb_mean 5 --quiet_sun_box 35 40 35 40 --movie ...` (commands in
+  and `gris_plot.py --cube ... --bb_mean 5 --quiet_sun_box 35 40 35 40
+  --movie ...` (commands in
   [README.md](README.md#how-to-run-v2)).
 
 The configuration is read once ([gris_momfbd.py:127-144](gris_momfbd.py#L127-L144)). Two checks
@@ -400,39 +401,58 @@ worst-seeing planes it is ~0.3-0.9 px (README).
 
 ## 5. Figures and movie ([gris_plot.py](gris_plot.py))
 
-* **BB running mean, for display only** ([`steps_from_cube`](gris_plot.py#L93),
-  [lines 107-108](gris_plot.py#L107-L108)).
+* **BB running mean, for display only** ([`steps_from_cube`](gris_plot.py#L101),
+  [lines 122-123](gris_plot.py#L122-L123)).
   * Each BB frame is the mean of the planes of steps k-2..k+2: 3 or 4 steps at the ends of the
     scan, as the panel title says. NB is the single step k.
   * Why: BB shows the same scene at every step (45 s in total), so its step-to-step changes are
     reconstruction noise of independent bursts. The mean reduces that noise without changing the
     scene. NB is not averaged, because that would mix wavelengths.
-* **Display range** ([`display_range`](gris_plot.py#L121)). One range per channel for the whole
+* **Display range** ([`display_range`](gris_plot.py#L140)). One range per channel for the whole
   scan, so the line darkening stays visible. It runs from the lowest 0.5 percentile to the
   highest 99.5 percentile over the steps, measured 8 px inside the edges (BB after averaging).
-  science1: BB 805-2952 ADU, NB 403-2521 ADU.
-* **Full resolution** ([`plot_step`](gris_plot.py#L190)).
+  science1: BB 805-2952 ADU, NB 403-2521 ADU. The colour bars show these values labelled as
+  pixel counts.
+* **Full resolution** ([`plot_step`](gris_plot.py#L209)).
   * Each panel is converted to 8-bit grey here: round((x - vmin)/(vmax - vmin) x 255), clipped
-    ([line 214](gris_plot.py#L214)).
-  * It is pasted pixel for pixel with `figimage` ([line 215](gris_plot.py#L215)), so one cube
+    ([line 233](gris_plot.py#L233)).
+  * It is pasted pixel for pixel with `figimage` ([line 234](gris_plot.py#L234)), so one cube
     pixel is one image pixel, with no resampling.
   * Axes and colour bars are drawn around the panels and do not cover image pixels. Only the
-    quiet-Sun overlays (next item) cover parts of the images.
+    quiet-Sun overlays (the quiet-Sun spectrum item below) cover parts of the images.
   * The frame is 3104 x 1488 px, a multiple of 16 so that the encoder does not rescale it. It is
-    saved as an 8-bit grey PNG ([line 241](gris_plot.py#L241)).
-* **Quiet-Sun spectrum** (`--quiet_sun_box 35 40 35 40`; [`box_spectrum`](gris_plot.py#L131),
-  [`draw_spectrum`](gris_plot.py#L154)). Shows that the movie scans in wavelength, not in time.
+    saved as an 8-bit grey PNG ([line 261](gris_plot.py#L261)).
+* **Titles** ([lines 252-255](gris_plot.py#L252-L255)).
+  * Figure title: telescope, instrument and date ("GREGOR / CRISP   2026-10-06").
+    * GREGOR is a constant in the script, because it is not in the headers.
+    * The instrument is `INSTRUME`.
+    * The date is the `DATE-OBS` of the scan's first raw file ([lines 113-116](gris_plot.py#L113-L116)), because the cube keeps
+      no date.
+  * Subtitle: the step and the wavelength.
+  * The colour bars are labelled "Pixel counts".
+* **Quiet-Sun spectrum** (`--quiet_sun_box 35 40 35 40`; [`box_spectrum`](gris_plot.py#L150),
+  [`draw_spectrum`](gris_plot.py#L173)). Shows that the movie scans in wavelength, not in time.
   * At every step, the NB cube is averaged over the pixels that lie entirely inside x, y = 35-40"
-    (cube pixels 1094-1249, 156 x 156; [line 147](gris_plot.py#L147)).
+    (cube pixels 1094-1249, 156 x 156; [line 166](gris_plot.py#L166)).
   * The spectrum is divided by a straight continuum through the first and last 3 steps
-    ([line 150](gris_plot.py#L150)), which also removes the ~4 % slope of the NB continuum.
+    ([line 169](gris_plot.py#L169)), which also removes the ~4 % slope of the NB continuum.
   * A white card in the top-right corner of the NB panel (560 x 300 px, 85 % opaque) shows I/Ic
     against the cube's wavelength axis. A black arrow and dot mark the step on display.
   * The card covers ~17.9" x 9.6" of the NB image, including the box itself, so the box is
     outlined in black on the BB panel instead.
   * science1: I/Ic falls to 0.52 at step 40 (Fe I 6301.5). The spectrum also shows Fe I 6302.5
     (step 71) and the telluric O2 lines (steps 55 and 79).
-* **Movie** ([`write_movie`](gris_plot.py#L244)): H.264 at 8 frames/s, full-range grey.
+* **Optional smoothing, for display only, off by default** (`--smooth SIGMA`;
+  [lines 125-127](gris_plot.py#L125-L127)). The movies in `plots_cube_v2/` are made without it.
+  * If given, every frame is convolved with a Gaussian of that width, both channels, BB after the
+    5-step mean. The display range is still computed from the unsmoothed frames.
+  * With sigma = 1.5 px (FWHM 3.5 px = 0.11", a little coarser than the diffraction limit of
+    0.09"), it passes 71 % of the amplitude at 0.25 of the diffraction cutoff, 25 % at 0.5 and
+    6.5 % at 0.7.
+  * Why: it reduces the burst-to-burst reconstruction grain, which is most visible in the dark
+    umbrae, uniformly over the field. Reconstruction settings did not help (README, "Texture in
+    the umbrae").
+* **Movie** ([`write_movie`](gris_plot.py#L264)): H.264 at 8 frames/s, full-range grey.
   * `--crf 0` gives the lossless `<scan>_scan.mp4`: every frame decodes exactly to its PNG.
   * `--crf 1` gives `<scan>_scan_compatible.mp4`, a standard High-profile copy within ~0.5 grey
     level rms.
@@ -482,6 +502,7 @@ is the final product, made with the current `gris_plot.py` from the v2 cube.
 | field | 984 px = 31.5" (1024 px crop), including the 1 px zero ring | 1326 px = 42.4" (1408 px crop); the first movie's field is its central part, ~171 px in from each edge |
 | geometry from step to step | each step in its own burst geometry: mean shifts up to ~4 px, local distortions of typically 7-8 px and up to ~14 px between a step and the scan average | all steps registered to the scan-average geometry, ~0.1 px residual |
 | panels | 2 x 2: raw frame 0 and reconstruction, for BB and NB | 1 x 2: reconstructions only, BB and NB, with the quiet-Sun spectrum in the NB panel (section 5) |
+| titles | scan, step, wavelength and `DATE-OBS`; colour bars in ADU | telescope, instrument and date; step and wavelength in a subtitle; colour bars in pixel counts |
 | BB | the single step | mean of 5 steps (3-4 at the ends) |
 | NB | the single step | the single step |
 | display scale | 984 px drawn in ~516 px (1.9 data px per screen px), resampled by matplotlib's anti-aliasing (Hanning) filter | 1 data px = 1 screen px, no resampling |
@@ -500,7 +521,8 @@ panel, in grey levels:
 | final movie | 1.0 | 1.3 |
 | final movie, NB panel (the line moving through the scan plus per-step noise) | 4.2 | 6.2 |
 
-All three are measured on the PNG frames, before the quiet-Sun spectrum was added. They
+All three are measured on the PNG frames, before the quiet-Sun spectrum was
+added. They
 correspond to different steps of the pipeline:
 
 1. **Alignment.** In the first movie almost all of the change is the image itself moving: every
@@ -518,14 +540,14 @@ correspond to different steps of the pipeline:
    v2 removes the fine grain that the white model let through, especially in bad seeing.
 4. **Display scale.** The first movie showed each data pixel at about half size, and the
    resampling filter averaged neighbouring pixels. The final movie shows every pixel (except under the
-   quiet-Sun card in the top-right of NB): the full detail, but also all the fine-scale noise. A larger field (42.4" instead of 31.5") includes
-   outer patches, where the noise is somewhat higher.
+   quiet-Sun card in the top-right of NB): the full detail, but also all the fine-scale noise. A larger
+   field (42.4" instead of 31.5") includes outer patches, where the noise is somewhat higher.
 5. **Encoding.** CRF 18 is fine for a moving scene, but in a still one it changes the fine
    texture about as much as the data do. The final movie is lossless.
 
 In short: the first movie shows each step as it came out of its own burst, small and moving. The
-final movie shows the registered cube at full resolution and full fidelity outside the spectrum
-inset, with the BB averaged over 5 steps so that its burst-to-burst noise does not flicker.
+final movie shows the registered cube at full resolution, with the BB
+averaged over 5 steps so that its burst-to-burst noise does not flicker.
 
 ## 9. Code index
 
@@ -549,8 +571,9 @@ inset, with the BB averaged over 5 steps so that its burst-to-burst noise does n
 | object and Wiener filter | [Deconvolution.compute_object](../../src/torchmfbd/deconvolution.py#L1490), [wiener_filter](../../src/torchmfbd/deconvolution.py#L908) |
 | output file | [hifi_common.write_output](../hifi/hifi_common.py#L275) |
 | cube registration | [gris_make_cube.register_cubes](gris_make_cube.py#L50) |
-| BB running mean | [gris_plot.steps_from_cube](gris_plot.py#L93) |
-| full-resolution frame | [gris_plot.plot_step](gris_plot.py#L190) |
-| quiet-Sun spectrum inset | [gris_plot.box_spectrum](gris_plot.py#L131), [draw_spectrum](gris_plot.py#L154) |
-| movie | [gris_plot.write_movie](gris_plot.py#L244) |
+| BB running mean | [gris_plot.steps_from_cube](gris_plot.py#L101) |
+| full-resolution frame | [gris_plot.plot_step](gris_plot.py#L209) |
+| quiet-Sun spectrum inset | [gris_plot.box_spectrum](gris_plot.py#L150), [draw_spectrum](gris_plot.py#L173) |
+| optional smoothing (display) | [gris_plot.steps_from_cube](gris_plot.py#L101) |
+| movie | [gris_plot.write_movie](gris_plot.py#L264) |
 | configuration (v2) | [gris_momfbd_v2.yaml](gris_momfbd_v2.yaml), defaults in [configuration.py](../../src/torchmfbd/configuration.py#L1) |

@@ -120,6 +120,31 @@ go a little more in bad seeing. The movies therefore show BB
 as a running mean of 5 steps (see Outputs). For spectral work, the BB step-to-step scatter is a
 direct estimate of the per-step reconstruction error at each position, also for NB.
 
+**Texture in the umbrae.** At full resolution the umbrae (e.g. the large spot at x 5-8", y 30-38")
+show a fine hair-like and grainy texture, most visible in single NB steps. Investigated on
+2026-10-13:
+* **Coarser than ~0.3": real.** It repeats from burst to burst; it is still there in the mean of
+  all 100 BB steps and in science2, observed a minute later. It includes umbral dots, the light
+  bridge and filament tips.
+* **Finer grain: mostly noise.** It is burst-to-burst reconstruction error. In ADU it is as large
+  as in the nearby quiet Sun, but it is ~2.5x larger relative to the umbral intensity, and no
+  granulation hides it. About half of it at these scales is photon noise amplified by the
+  deconvolution.
+* **Not the stretching.** Step files and cube planes show the same texture, so the cube
+  registration does not cause it. Switching off the destretch within each burst makes the noise
+  28-32 % worse.
+* **Configuration changes do not help.** Tested on GPU, on science1 steps 18-21 and 40:
+  filter_threshold 0.5 gives -3 %, 27 modes -8 %, 96 px patches +16 %. Each acts on the whole
+  field like a uniform blur, because the Wiener filter is set per 128 px patch.
+* **The display made it worse.** The BB grey scale clipped ~10 % of the umbral pixels to black.
+* **Optional smoothing (display only, off by default; the movies are not smoothed):**
+  `gris_plot.py --smooth SIGMA` applies a Gaussian of that width to every pixel of both channels,
+  BB after the 5-step mean. The display range is still computed from the unsmoothed frames.
+  * With sigma = 1.5 px (FWHM 3.5 px = 0.11", a little coarser than the diffraction limit
+    lambda/D = 0.09"), it keeps 71 % of the amplitude at 0.25 of the diffraction cutoff, 25 % at
+    0.5 and 6.5 % at 0.7.
+  * The grain disappears, and so does most of the real detail finer than ~0.2".
+
 ## Files
 
 | file | job |
@@ -160,8 +185,8 @@ $PY gris_plot.py --cube results_momfbd_v2/science1_cube.fits --bb_mean 5 --quiet
 ```
 
 PNGs that already exist in `--output_dir` are not redrawn (unless `--overwrite`), so use a new
-directory (or `--overwrite`) when changing `--bb_mean` or `--quiet_sun_box` or after rebuilding the
-cube, or the movie would show the old frames.
+directory (or `--overwrite`) when changing `--bb_mean`, `--quiet_sun_box` or `--smooth` or after
+rebuilding the cube, or the movie would show the old frames.
 
 `run_gris.sh` starts the reconstructions with `nohup`. If the shell that launches it may be killed
 as a whole (a terminal manager cleaning up its jobs did this once, after step 72), start it in
@@ -210,6 +235,9 @@ the destretch displacements approach `--border`; 20 is enough for the 1408 px fi
   continuum = straight line through the first and last 3 steps), with an arrow at the wavelength
   on display, to make clear that the movie runs through wavelength, not time. The inset covers
   that box in NB, so the box is outlined on BB (`--quiet_sun_box`; PIPELINE.md section 5).
+  The title gives the telescope, instrument and date (GREGOR / CRISP,
+  2026-10-06) and the subtitle the step and wavelength. The colour bars are labelled in pixel
+  counts, which are the ADU of the data.
 * `plots_cube_v2/<scan>_scan.mp4`: those PNGs at 8 frames/s, H.264 lossless (every pixel equals
   the PNG; ~0.9-1 MB per frame, ~88-101 MB per movie). Lossless H.264 uses the High 4:4:4
   Predictive profile, which VLC, mpv and ffplay play but browsers, QuickTime and the VS Code
