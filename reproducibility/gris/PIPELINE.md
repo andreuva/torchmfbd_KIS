@@ -7,7 +7,7 @@ issues; this document is the detailed account of the processing. The last sectio
 the first movie (`plots/science1_scan.mp4`) differs from the final one
 (`plots_cube_v2/science1_scan.mp4`).
 
-Line links refer to the code of the `gris-momfbd` branch as of 2026-10-12. Three code bases are
+Line links refer to the code of the `gris-momfbd` branch as of 2026-10-13. Three code bases are
 involved:
 
 * `reproducibility/gris/`: the scripts written for this dataset (reading, driver, cube, figures);
@@ -43,7 +43,7 @@ level-1 files: per scan 100 wavelength steps x 32 frames x 2048 x 2048, NB and B
  |
  |  gris_plot.py, once per scan (CPU, ~2 min)
  |  10  BB as a 5-step running mean (display only), fixed grey scale, one image pixel per
- |      data pixel, lossless movie
+ |      data pixel, quiet-Sun spectrum inset, lossless movie
 ```
 
 What the data look like after each stage:
@@ -57,7 +57,7 @@ What the data look like after each stage:
 | patches (5-7) | 441 x 32 x 128 x 128, then 441 x 128 x 128 objects | stride 64 px | per patch, the object sits where it is in the destretched frame 0 | normalised |
 | mosaic (8) | 1366 x 1366 | NB detector 341-1706 | geometry of that step's burst | ADU |
 | cube (9) | 100 x 1326 x 1326 | NB detector 361-1686 | every step resampled to the average geometry of the scan | ADU |
-| movie frame (10) | 3104 x 1488 px, 8-bit grey, BB and NB side by side | one cube pixel = one image pixel | as the cube | grey level = ADU through a fixed range |
+| movie frame (10) | 3104 x 1488 px, 8-bit grey, BB and NB side by side | one cube pixel = one image pixel | as the cube | grey level = ADU through a fixed range (except under the spectrum inset) |
 
 ## 1. The input
 
@@ -91,7 +91,7 @@ The reader's docstring summarises what was measured on these files:
   exists ([gris_momfbd.py:177-193](gris_momfbd.py#L177-L193)), so a run is resumed by starting it
   again (with a new `TAG`).
 * Then, per scan: `gris_make_cube.py --results_dir results_momfbd_v2/<scan> --gpu 0 --border 20`
-  and `gris_plot.py --cube ... --bb_mean 5 --movie ...` (commands in
+  and `gris_plot.py --cube ... --bb_mean 5 --quiet_sun_box 35 40 35 40 --movie ...` (commands in
   [README.md](README.md#how-to-run-v2)).
 
 The configuration is read once ([gris_momfbd.py:127-144](gris_momfbd.py#L127-L144)). Two checks
@@ -400,26 +400,39 @@ worst-seeing planes it is ~0.3-0.9 px (README).
 
 ## 5. Figures and movie ([gris_plot.py](gris_plot.py))
 
-* **BB running mean, for display only** ([`steps_from_cube`](gris_plot.py#L85),
-  [lines 99-100](gris_plot.py#L99-L100)).
+* **BB running mean, for display only** ([`steps_from_cube`](gris_plot.py#L93),
+  [lines 107-108](gris_plot.py#L107-L108)).
   * Each BB frame is the mean of the planes of steps k-2..k+2: 3 or 4 steps at the ends of the
     scan, as the panel title says. NB is the single step k.
   * Why: BB shows the same scene at every step (45 s in total), so its step-to-step changes are
     reconstruction noise of independent bursts. The mean reduces that noise without changing the
     scene. NB is not averaged, because that would mix wavelengths.
-* **Display range** ([`display_range`](gris_plot.py#L113)). One range per channel for the whole
+* **Display range** ([`display_range`](gris_plot.py#L121)). One range per channel for the whole
   scan, so the line darkening stays visible. It runs from the lowest 0.5 percentile to the
   highest 99.5 percentile over the steps, measured 8 px inside the edges (BB after averaging).
   science1: BB 805-2952 ADU, NB 403-2521 ADU.
-* **Full resolution** ([`plot_step`](gris_plot.py#L123)).
+* **Full resolution** ([`plot_step`](gris_plot.py#L190)).
   * Each panel is converted to 8-bit grey here: round((x - vmin)/(vmax - vmin) x 255), clipped
-    ([line 147](gris_plot.py#L147)).
-  * It is pasted pixel for pixel with `figimage` ([line 148](gris_plot.py#L148)), so one cube
+    ([line 214](gris_plot.py#L214)).
+  * It is pasted pixel for pixel with `figimage` ([line 215](gris_plot.py#L215)), so one cube
     pixel is one image pixel, with no resampling.
-  * Axes and colour bars are drawn around the panels and do not cover image pixels.
+  * Axes and colour bars are drawn around the panels and do not cover image pixels. Only the
+    quiet-Sun overlays (next item) cover parts of the images.
   * The frame is 3104 x 1488 px, a multiple of 16 so that the encoder does not rescale it. It is
-    saved as an 8-bit grey PNG ([line 171](gris_plot.py#L171)).
-* **Movie** ([`write_movie`](gris_plot.py#L174)): H.264 at 8 frames/s, full-range grey.
+    saved as an 8-bit grey PNG ([line 241](gris_plot.py#L241)).
+* **Quiet-Sun spectrum** (`--quiet_sun_box 35 40 35 40`; [`box_spectrum`](gris_plot.py#L131),
+  [`draw_spectrum`](gris_plot.py#L154)). Shows that the movie scans in wavelength, not in time.
+  * At every step, the NB cube is averaged over the pixels that lie entirely inside x, y = 35-40"
+    (cube pixels 1094-1249, 156 x 156; [line 147](gris_plot.py#L147)).
+  * The spectrum is divided by a straight continuum through the first and last 3 steps
+    ([line 150](gris_plot.py#L150)), which also removes the ~4 % slope of the NB continuum.
+  * A white card in the top-right corner of the NB panel (560 x 300 px, 85 % opaque) shows I/Ic
+    against the cube's wavelength axis. A black arrow and dot mark the step on display.
+  * The card covers ~17.9" x 9.6" of the NB image, including the box itself, so the box is
+    outlined in black on the BB panel instead.
+  * science1: I/Ic falls to 0.52 at step 40 (Fe I 6301.5). The spectrum also shows Fe I 6302.5
+    (step 71) and the telluric O2 lines (steps 55 and 79).
+* **Movie** ([`write_movie`](gris_plot.py#L244)): H.264 at 8 frames/s, full-range grey.
   * `--crf 0` gives the lossless `<scan>_scan.mp4`: every frame decodes exactly to its PNG.
   * `--crf 1` gives `<scan>_scan_compatible.mp4`, a standard High-profile copy within ~0.5 grey
     level rms.
@@ -468,14 +481,14 @@ is the final product, made with the current `gris_plot.py` from the v2 cube.
 | noise model | `white` | `auto`, flat below 0.70 |
 | field | 984 px = 31.5" (1024 px crop), including the 1 px zero ring | 1326 px = 42.4" (1408 px crop); the first movie's field is its central part, ~171 px in from each edge |
 | geometry from step to step | each step in its own burst geometry: mean shifts up to ~4 px, local distortions of typically 7-8 px and up to ~14 px between a step and the scan average | all steps registered to the scan-average geometry, ~0.1 px residual |
-| panels | 2 x 2: raw frame 0 and reconstruction, for BB and NB | 1 x 2: reconstructions only, BB and NB |
+| panels | 2 x 2: raw frame 0 and reconstruction, for BB and NB | 1 x 2: reconstructions only, BB and NB, with the quiet-Sun spectrum in the NB panel (section 5) |
 | BB | the single step | mean of 5 steps (3-4 at the ends) |
 | NB | the single step | the single step |
 | display scale | 984 px drawn in ~516 px (1.9 data px per screen px), resampled by matplotlib's anti-aliasing (Hanning) filter | 1 data px = 1 screen px, no resampling |
 | grey levels | matplotlib's `gray` colour map (232 of 256 levels) | all 256 levels, computed directly |
 | display range | BB 706-2945, NB 349-2504 ADU (0.5/99.5 percentiles of the whole mosaics) | BB 805-2952, NB 403-2521 ADU (interior; BB after averaging) |
 | frame | 1430 x 1386 px RGBA PNG, stretched by the encoder to 1440 x 1392 (0.7 % in x, 0.4 % in y) | 3104 x 1488 px 8-bit grey PNG, encoded as is |
-| encoding | H.264 High, CRF 18, keyframe every 16 frames, video levels 16-235; 7 MB, 4.5 Mb/s | lossless H.264 (High 4:4:4 Predictive), full range; 104 MB, 67 Mb/s; plus a CRF 1 standard copy |
+| encoding | H.264 High, CRF 18, keyframe every 16 frames, video levels 16-235; 7 MB, 4.5 Mb/s | lossless H.264 (High 4:4:4 Predictive), full range; 101 MB, 65 Mb/s; plus a CRF 1 standard copy |
 | length | 100 frames at 8 frames/s, 12.5 s | same |
 
 **What changes on screen.** The rms change between consecutive frames in the BB reconstruction
@@ -487,7 +500,8 @@ panel, in grey levels:
 | final movie | 1.0 | 1.3 |
 | final movie, NB panel (the line moving through the scan plus per-step noise) | 4.2 | 6.2 |
 
-All three are measured on the PNG frames. They correspond to different steps of the pipeline:
+All three are measured on the PNG frames, before the quiet-Sun spectrum was added. They
+correspond to different steps of the pipeline:
 
 1. **Alignment.** In the first movie almost all of the change is the image itself moving: every
    step is shown in the distortion its own burst left behind (section 6). That distortion is not
@@ -503,15 +517,15 @@ All three are measured on the PNG frames. They correspond to different steps of 
    changes more from step to step than v2 (README, "Moving texture in the aligned movies").
    v2 removes the fine grain that the white model let through, especially in bad seeing.
 4. **Display scale.** The first movie showed each data pixel at about half size, and the
-   resampling filter averaged neighbouring pixels. The final movie shows every pixel: the full
-   detail, but also all the fine-scale noise. A larger field (42.4" instead of 31.5") includes
+   resampling filter averaged neighbouring pixels. The final movie shows every pixel (except under the
+   quiet-Sun card in the top-right of NB): the full detail, but also all the fine-scale noise. A larger field (42.4" instead of 31.5") includes
    outer patches, where the noise is somewhat higher.
 5. **Encoding.** CRF 18 is fine for a moving scene, but in a still one it changes the fine
    texture about as much as the data do. The final movie is lossless.
 
 In short: the first movie shows each step as it came out of its own burst, small and moving. The
-final movie shows the registered cube at full resolution and full fidelity, with the BB averaged
-over 5 steps so that its burst-to-burst noise does not flicker.
+final movie shows the registered cube at full resolution and full fidelity outside the spectrum
+inset, with the BB averaged over 5 steps so that its burst-to-burst noise does not flicker.
 
 ## 9. Code index
 
@@ -535,7 +549,8 @@ over 5 steps so that its burst-to-burst noise does not flicker.
 | object and Wiener filter | [Deconvolution.compute_object](../../src/torchmfbd/deconvolution.py#L1490), [wiener_filter](../../src/torchmfbd/deconvolution.py#L908) |
 | output file | [hifi_common.write_output](../hifi/hifi_common.py#L275) |
 | cube registration | [gris_make_cube.register_cubes](gris_make_cube.py#L50) |
-| BB running mean | [gris_plot.steps_from_cube](gris_plot.py#L85) |
-| full-resolution frame | [gris_plot.plot_step](gris_plot.py#L123) |
-| movie | [gris_plot.write_movie](gris_plot.py#L174) |
+| BB running mean | [gris_plot.steps_from_cube](gris_plot.py#L93) |
+| full-resolution frame | [gris_plot.plot_step](gris_plot.py#L190) |
+| quiet-Sun spectrum inset | [gris_plot.box_spectrum](gris_plot.py#L131), [draw_spectrum](gris_plot.py#L154) |
+| movie | [gris_plot.write_movie](gris_plot.py#L244) |
 | configuration (v2) | [gris_momfbd_v2.yaml](gris_momfbd_v2.yaml), defaults in [configuration.py](../../src/torchmfbd/configuration.py#L1) |

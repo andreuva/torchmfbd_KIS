@@ -153,15 +153,15 @@ TAG=v2 ./run_gris.sh --config gris_momfbd_v2.yaml --crop_size 1408 --simultaneou
 # 3. per scan: cube, full-resolution PNGs from the cube and the lossless movie through the scan,
 #    then a standard-profile copy of the movie from the same PNGs (existing PNGs are reused)
 $PY gris_make_cube.py --results_dir results_momfbd_v2/science1 --gpu 0 --border 20
-$PY gris_plot.py --cube results_momfbd_v2/science1_cube.fits --bb_mean 5 \
+$PY gris_plot.py --cube results_momfbd_v2/science1_cube.fits --bb_mean 5 --quiet_sun_box 35 40 35 40 \
     --output_dir plots_cube_v2/science1 --movie plots_cube_v2/science1_scan.mp4
-$PY gris_plot.py --cube results_momfbd_v2/science1_cube.fits --bb_mean 5 \
+$PY gris_plot.py --cube results_momfbd_v2/science1_cube.fits --bb_mean 5 --quiet_sun_box 35 40 35 40 \
     --output_dir plots_cube_v2/science1 --crf 1 --movie plots_cube_v2/science1_scan_compatible.mp4
 ```
 
 PNGs that already exist in `--output_dir` are not redrawn (unless `--overwrite`), so use a new
-directory (or `--overwrite`) when changing `--bb_mean` or after rebuilding the cube, or the movie
-would show the old frames.
+directory (or `--overwrite`) when changing `--bb_mean` or `--quiet_sun_box` or after rebuilding the
+cube, or the movie would show the old frames.
 
 `run_gris.sh` starts the reconstructions with `nohup`. If the shell that launches it may be killed
 as a whole (a terminal manager cleaning up its jobs did this once, after step 72), start it in
@@ -205,9 +205,13 @@ the destretch displacements approach `--border`; 20 is enough for the 1408 px fi
 * `plots_cube_v2/<scan>/stepNNN_<wavelength>A_cube.png`: the v2 cube planes at full resolution,
   every cube pixel one image pixel (3104 x 1488 px, 8-bit grey), one display range per channel
   for the whole scan. BB is the mean of the 5 steps centred on each step (3 or 4 at the ends of
-  the scan; the panel title gives the steps), NB is the single step.
+  the scan; the panel title gives the steps), NB is the single step. An inset in the top-right
+  corner of the NB panel shows the mean NB spectrum of the quiet Sun at x, y = 35-40" (I/Ic,
+  continuum = straight line through the first and last 3 steps), with an arrow at the wavelength
+  on display, to make clear that the movie runs through wavelength, not time. The inset covers
+  that box in NB, so the box is outlined on BB (`--quiet_sun_box`; PIPELINE.md section 5).
 * `plots_cube_v2/<scan>_scan.mp4`: those PNGs at 8 frames/s, H.264 lossless (every pixel equals
-  the PNG; ~1 MB per frame, ~95-110 MB per movie). Lossless H.264 uses the High 4:4:4
+  the PNG; ~0.9-1 MB per frame, ~88-101 MB per movie). Lossless H.264 uses the High 4:4:4
   Predictive profile, which VLC, mpv and ffplay play but browsers, QuickTime and the VS Code
   preview do not; for those use `<scan>_scan_compatible.mp4` (standard High profile, level 5.0,
   within ~0.5 grey level rms of the PNGs, about the same size).
@@ -248,6 +252,7 @@ the destretch displacements approach `--border`; 20 is enough for the 1408 px fi
 * **NB fringes**: concentric rings ~30-40 px apart in the outer field, centred near the detector
   centre, present in the raw NB data (clear in science2, weak in science1, absent in BB) and
   passed through by MOMFBD; visible in the outer field of science2 line-core planes.
-* **NB continuum slope**: the prefilter-corrected NB continuum is ~3 % brighter at the red end of
-  the scan than at the blue end (BB is flat to < 1 %), the same in the raw data; normalise line
+* **NB continuum slope**: the prefilter-corrected NB continuum is ~4 % brighter at the red end of
+  the scan than at the blue end (in the cubes, with a straight continuum through both ends; 3.2 % from
+  the raw `NBSCALE`) (BB is flat to < 1 %), the same in the raw data; normalise line
   profiles with a continuum fitted through both ends of the scan.

@@ -3,6 +3,7 @@ Figures of a reconstructed scan, one PNG per wavelength step, and optionally a m
 
     python gris_plot.py --results_dir results_momfbd_v2/science1 --output_dir plots_steps/science1
     python gris_plot.py --cube results_momfbd_v2/science1_cube.fits --bb_mean 5 \
+        --quiet_sun_box 35 40 35 40 \
         --output_dir plots_cube_v2/science1 --movie plots_cube_v2/science1_scan.mp4
 
 From the per-step files (--results_dir) every figure shows raw frame 0 next to the
@@ -23,6 +24,12 @@ same continuum scene at every step (the whole scan lasts 45 s), so its step-to-s
 reconstruction noise that differs from burst to burst; in the aligned movie that noise is no
 longer hidden by image motion. NB is always shown per step (averaging it would mix wavelengths).
 
+--quiet_sun_box X0 X1 Y0 Y1 (cube only, arcsec on the figure axes) adds, in the top-right corner
+of the NB panel, the mean NB spectrum of that box with an arrow at the wavelength on display, to
+show that the movie scans in wavelength. The spectrum is divided by a straight continuum through
+the first and last 3 steps. The box is outlined on BB (in NB the inset covers the top-right
+corner, where the 35-40" box lies).
+
 One display range per channel is used for the whole scan so that the line darkening is visible
 from step to step.
 """
@@ -36,6 +43,7 @@ import numpy as np
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt     # noqa: E402
+from matplotlib.patches import Rectangle  # noqa: E402
 from astropy.io import fits         # noqa: E402
 from PIL import Image               # noqa: E402
 from tqdm import tqdm               # noqa: E402
@@ -120,7 +128,66 @@ def display_range(frames, low=0.5, high=99.5, border=8):
     return (min(bb_lo), max(bb_hi)), (min(nb_lo), max(nb_hi))
 
 
-def plot_step(info, bb, nb, raw, bb_range, nb_range, png):
+def box_spectrum(path, box, n_cont=3):
+    """
+    Mean NB spectrum of a box of the cube, divided by a straight continuum fitted through the
+    first and last n_cont steps (this also removes the ~4 % red-blue slope of the NB continuum).
+
+    box = (x0, x1, y0, y1) in arcsec on the figure axes, where cube pixel i covers
+    [i, i + 1) x PIXSCALE; the pixels lying entirely inside the box are used.
+    Returns the wavelengths, the normalised spectrum and the box in cube pixels (c0, c1, r0, r1).
+    """
+    with fits.open(path) as f:
+        pix = float(f[0].header.get('PIXSCALE', gris.PIX_SCALE))
+        nb, wave = f['NB'].data, f['WAVE'].data
+        c0, c1 = int(np.ceil(box[0] / pix - 1e-6)), int(np.floor(box[1] / pix + 1e-6))
+        r0, r1 = int(np.ceil(box[2] / pix - 1e-6)), int(np.floor(box[3] / pix + 1e-6))
+        if not (0 <= c0 < c1 <= nb.shape[2] and 0 <= r0 < r1 <= nb.shape[1]):
+            raise SystemExit(f"--quiet_sun_box {box} is not inside the {nb.shape[2] * pix:.1f}\" field")
+        spec = nb[:, r0:r1, c0:c1].mean(axis=(1, 2), dtype=np.float64)
+    ok = np.flatnonzero(np.isfinite(spec))       # a missing step is a NaN plane
+    ends = np.r_[ok[:n_cont], ok[-n_cont:]]
+    continuum = np.polyval(np.polyfit(wave[ends], spec[ends], 1), wave)
+    return wave, spec / continuum, (c0, c1, r0, r1)
+
+
+def draw_spectrum(fig, spectrum, wave_now, bb_x0, nb_x0, y0, nx, ny):
+    """
+    The --quiet_sun_box overlays, in canvas pixels (origin bottom left): the box outlined on the
+    BB panel, and in the top-right corner of the NB panel the box's spectrum on a white card,
+    with an arrow at the wavelength on display. All black and white, so the frame stays grey.
+    """
+    wave, spec, (c0, c1, r0, r1) = spectrum
+    width, height = fig.bbox.width, fig.bbox.height
+    fig.add_artist(Rectangle((bb_x0 + c0, y0 + r0), c1 - c0, r1 - r0, transform=None, fill=False,
+                             edgecolor='black', linewidth=1.5, zorder=3))
+    w, h, margin = 560, 300, 16                  # card size and distance from the panel edges
+    cx, cy = nb_x0 + nx - margin - w, y0 + ny - margin - h
+    fig.add_artist(Rectangle((cx, cy), w, h, transform=None, facecolor='white', alpha=0.85,
+                             edgecolor='black', linewidth=1, zorder=4))
+    ax = fig.add_axes([(cx + 70) / width, (cy + 58) / height, (w - 86) / width, (h - 72) / height])
+    ax.set_zorder(5)                             # above the figimage panels
+    ax.patch.set_alpha(0)
+    ax.plot(wave, spec, color='0.3', linewidth=1.8)
+    k = int(np.argmin(np.abs(wave - wave_now)))
+    top = 1.25
+    ax.plot(wave[k], spec[k], 'o', color='black', markersize=7)
+    ax.annotate('', xy=(wave[k], spec[k] + 0.06), xytext=(wave[k], top - 0.01),
+                arrowprops=dict(arrowstyle='-|>', color='black', linewidth=2.5, mutation_scale=16))
+    pad = 3 * (wave[-1] - wave[0]) / (len(wave) - 1)    # three steps, so the arrow clears the axes
+    ax.set_xlim(wave[0] - pad, wave[-1] + pad)
+    ax.set_ylim(min(0.4, float(np.nanmin(spec)) - 0.05), top)
+    ticks = np.arange(np.ceil(wave[0]), np.floor(wave[-1]) + 1)
+    ax.set_xticks(ticks, [f'{t:.0f}' for t in ticks])
+    ax.set_yticks([0.5, 1.0])
+    ax.set_xlabel('λ [Å]', fontsize=13)
+    ax.set_ylabel('I / I$_c$', fontsize=13)
+    ax.tick_params(labelsize=12)
+    ax.spines[['top', 'right']].set_visible(False)
+    ax.text(0.98, 0.04, 'quiet Sun (box on BB)', transform=ax.transAxes, ha='right', fontsize=12)
+
+
+def plot_step(info, bb, nb, raw, bb_range, nb_range, png, spectrum=None):
     ny, nx = nb.shape
     pix = info['pix']
     panels = [(info.get('bb_title', 'MOMFBD broad band'), bb, bb_range),
@@ -160,6 +227,9 @@ def plot_step(info, bb, nb, raw, bb_range, nb_range, png):
         mappable = plt.cm.ScalarMappable(plt.Normalize(*vrange), cmap='gray')
         fig.colorbar(mappable, cax=cax).set_label('ADU', fontsize=13)
         cax.tick_params(labelsize=12)
+    if spectrum is not None:                     # cube mode: one row, BB left, NB right
+        y0 = height - TOP - (ABOVE + ny + BELOW) + BELOW
+        draw_spectrum(fig, spectrum, info['wave'], LEFT, LEFT + (LEFT + nx + RIGHT), y0, nx, ny)
     date = f"  ({info['date']})" if info['date'] else ''
     fig.suptitle(f"{info['scan']}  step {info['step']}  λ = {info['wave']:.4f} Å{date}", fontsize=18,
                  y=1 - 12 / height, va='top')
@@ -202,6 +272,9 @@ if __name__ == '__main__':
     parser.add_argument("--no_raw", action="store_true", help="Per-step mode: reconstructions only")
     parser.add_argument("--bb_mean", type=int, default=1,
                         help="Cube only: show BB as the mean of this many steps centred on each step (odd)")
+    parser.add_argument("--quiet_sun_box", type=float, nargs=4, metavar=('X0', 'X1', 'Y0', 'Y1'), default=None,
+                        help="Cube only: inset with the mean NB spectrum of this box [arcsec on the figure "
+                             "axes] and an arrow at the wavelength on display, e.g. 35 40 35 40")
     parser.add_argument("--movie", default=None, help="Also write an H.264 movie of the figures to this file")
     parser.add_argument("--fps", type=int, default=8)
     parser.add_argument("--crf", type=int, default=0,
@@ -215,6 +288,11 @@ if __name__ == '__main__':
         parser.error("--bb_mean must be odd and at least 1")
     if args.bb_mean > 1 and not args.cube:
         parser.error("--bb_mean needs --cube: the per-step files are not in a common geometry")
+    if args.quiet_sun_box and not args.cube:
+        parser.error("--quiet_sun_box needs --cube: the per-step files are not in a common geometry")
+    if args.quiet_sun_box and not (args.quiet_sun_box[0] < args.quiet_sun_box[1]
+                                   and args.quiet_sun_box[2] < args.quiet_sun_box[3]):
+        parser.error("--quiet_sun_box needs X0 < X1 and Y0 < Y1")
     if not 0 <= args.crf <= 51:
         parser.error("--crf must be between 0 and 51")
     if args.movie and os.path.exists(args.movie) and not args.overwrite:
@@ -233,6 +311,7 @@ if __name__ == '__main__':
         def frames(with_raw=False):
             return steps_from_files(files, args.data_root if with_raw and not args.no_raw else None)
 
+    spectrum = box_spectrum(args.cube, args.quiet_sun_box) if args.quiet_sun_box else None
     os.makedirs(args.output_dir, exist_ok=True)
     bb_range, nb_range = display_range(frames())
     print(f"Display range BB {np.round(bb_range)} ADU, NB {np.round(nb_range)} ADU")
@@ -243,7 +322,7 @@ if __name__ == '__main__':
         pngs.append(png)
         if os.path.exists(png) and not args.overwrite:
             continue
-        plot_step(info, bb, nb, raw, bb_range, nb_range, png)
+        plot_step(info, bb, nb, raw, bb_range, nb_range, png, spectrum)
     print(f"PNGs in {args.output_dir}")
 
     if args.movie:
